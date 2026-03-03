@@ -1,0 +1,148 @@
+{
+  "projectType": "framework",
+  "projectName": "angr",
+  "projectDescription": "A platform-agnostic binary analysis framework with symbolic execution, control-flow analysis, and decompilation capabilities",
+  "theme": "aspen",
+  "primaryColor": "#1A1F35",
+  "lightColor": "#3B4A6B",
+  "darkColor": "#0D1117",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "core-concepts/projects",
+              "core-concepts/loading",
+              "core-concepts/states",
+              "core-concepts/simulation",
+              "core-concepts/symbolic-execution",
+              "core-concepts/solver"
+            ]
+          },
+          {
+            "group": "Analyses",
+            "pages": [
+              "analyses/overview",
+              "analyses/cfg",
+              "analyses/decompiler",
+              "analyses/data-flow",
+              "analyses/variable-recovery",
+              "analyses/identifier"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced-topics/exploration-techniques",
+              "advanced-topics/hooks-and-procedures",
+              "advanced-topics/engines",
+              "advanced-topics/state-plugins",
+              "advanced-topics/knowledge-base"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/ctf-solving",
+              "guides/vulnerability-discovery",
+              "guides/binary-patching",
+              "guides/reversing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/project",
+              "api/sim-state",
+              "api/sim-manager",
+              "api/block",
+              "api/factory"
+            ]
+          },
+          {
+            "group": "Analyses",
+            "pages": [
+              "api/analyses/cfg",
+              "api/analyses/decompiler",
+              "api/analyses/ddg",
+              "api/analyses/reaching-definitions",
+              "api/analyses/variable-recovery"
+            ]
+          },
+          {
+            "group": "Execution",
+            "pages": [
+              "api/engines",
+              "api/exploration-techniques",
+              "api/sim-procedure"
+            ]
+          },
+          {
+            "group": "State Plugins",
+            "pages": [
+              "api/state-plugins/memory",
+              "api/state-plugins/registers",
+              "api/state-plugins/solver",
+              "api/state-plugins/posix",
+              "api/state-plugins/filesystem"
+            ]
+          },
+          {
+            "group": "Knowledge Base",
+            "pages": [
+              "api/knowledge-base",
+              "api/knowledge-plugins/functions",
+              "api/knowledge-plugins/variables"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Symbolic execution for automated program analysis",
+    "Control-flow graph (CFG) generation and analysis",
+    "Binary decompilation to pseudocode",
+    "Multi-architecture support (x86, ARM, MIPS, etc.)",
+    "Data-flow and dependency analysis",
+    "Variable and type recovery",
+    "Exploration techniques for path discovery",
+    "Program state simulation and manipulation",
+    "Custom hooks and SimProcedures",
+    "Integration with solver engines (Z3, CVC4)"
+  ],
+  "publicApiSurface": [
+    "Project",
+    "SimState",
+    "SimulationManager",
+    "Block",
+    "CFGFast",
+    "CFGEmulated",
+    "Decompiler",
+    "BackwardSlice",
+    "ReachingDefinitionsAnalysis",
+    "VariableRecovery",
+    "DDG",
+    "VFG",
+    "SimProcedure",
+    "ExplorationTechnique",
+    "KnowledgeBase",
+    "load_shellcode"
+  ]
+}
