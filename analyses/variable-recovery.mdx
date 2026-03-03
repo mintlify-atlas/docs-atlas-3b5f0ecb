@@ -469,7 +469,11 @@ print(dec.codegen.text)
   <Card title="Decompiler" href="/analyses/decompiler">
     See variables in decompiled code
   </Card>
-  <Card title="Type Inference" href="/analyses/typehoon">
-    Infer variable types
+  <Card title="Data Flow Analysis" href="/analyses/data-flow">
+    Track data dependencies
   </Card>
 </CardGroup>
+
+<Note>
+Variable Recovery can be combined with the **Typehoon** analysis (`p.analyses.Typehoon()`) for advanced type inference. Typehoon uses constraint-based type inference to determine the types of recovered variables.
+</Note>

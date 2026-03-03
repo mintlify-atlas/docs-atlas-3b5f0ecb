@@ -498,7 +498,32 @@ ddg, vfg = analyze_data_flow('/bin/ls', 'main')
   <Card title="Variable Recovery" href="/analyses/variable-recovery">
     Identify variables using data flow
   </Card>
-  <Card title="Backward Slice" href="/analyses/backward-slice">
-    Slice programs using DDG
+  <Card title="CFG Analysis" href="/analyses/cfg">
+    Control-flow graph generation
   </Card>
 </CardGroup>
+
+## Backward Slicing
+
+DDG can be used for backward slicing with the `BackwardSlice` analysis:
+
+```python
+import angr
+
+p = angr.Project('binary')
+cfg = p.analyses.CFGFast()
+
+# Create a backward slice from a target address
+slice_analysis = p.analyses.BackwardSlice(
+    cfg=cfg,
+    cdg=p.analyses.CDG(cfg),
+    ddg=p.analyses.DDG(cfg),
+    targets=[(0x400500, 0)]  # (address, statement_index)
+)
+
+# Get the slice - all instructions affecting the target
+for addr in slice_analysis.slice:
+    print(f"0x{addr:x}")
+```
+
+The backward slice identifies all program statements that could affect the values at the target location.
