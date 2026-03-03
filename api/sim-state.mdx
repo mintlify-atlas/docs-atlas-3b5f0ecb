@@ -1,0 +1,473 @@
+---
+title: SimState
+description: Represents the state of a program including memory, registers, and constraints
+---
+
+The `SimState` class represents the state of a program at a particular point in execution, including its memory, registers, symbolic constraints, and execution history.
+
+## Class Signature
+
+```python
+class SimState(Generic[IPTypeConc, IPTypeSym], PluginHub[SimStatePlugin]):
+    def __init__(
+        self,
+        project: Project | None = None,
+        arch: Arch | None = None,
+        plugins: dict[str, SimStatePlugin] | None = None,
+        mode: str | None = None,
+        options: set[str] | list[str] | SimStateOptions | None = None,
+        add_options: set[str] | None = None,
+        remove_options: set[str] | None = None,
+        special_memory_filler: Callable[[str, int, int, SimState], Any] | None = None,
+        os_name: str | None = None,
+        plugin_preset: str = "default",
+        cle_memory_backer: Clemory | None = None,
+        dict_memory_backer: dict[int, bytes] | None = None,
+        permissions_map: dict[tuple[int, int], int] | None = None,
+        default_permissions: int = 3,
+        stack_perms: int | None = None,
+        stack_end: int | None = None,
+        stack_size: int | None = None,
+        regioned_memory_cls=None,
+        **kwargs,
+    )
+```
+
+## Parameters
+
+<ParamField path="project" type="Project">
+  The project instance.
+</ParamField>
+
+<ParamField path="arch" type="Arch | str">
+  The architecture of the state.
+</ParamField>
+
+<ParamField path="plugins" type="dict[str, SimStatePlugin]">
+  A dictionary of plugins to register with the state.
+</ParamField>
+
+<ParamField path="mode" type="str">
+  The execution mode (e.g., 'symbolic', 'static', 'fastpath'). Defaults to 'symbolic'.
+</ParamField>
+
+<ParamField path="options" type="set[str] | SimStateOptions">
+  A set of options to control state behavior.
+</ParamField>
+
+<ParamField path="add_options" type="set[str]">
+  Options to add to the default set.
+</ParamField>
+
+<ParamField path="remove_options" type="set[str]">
+  Options to remove from the default set.
+</ParamField>
+
+<ParamField path="plugin_preset" type="str" default="default">
+  The plugin preset to use.
+</ParamField>
+
+<ParamField path="cle_memory_backer" type="Clemory">
+  A CLE memory object to back the state's memory.
+</ParamField>
+
+<ParamField path="dict_memory_backer" type="dict[int, bytes]">
+  A dictionary mapping addresses to bytes for memory backing.
+</ParamField>
+
+<ParamField path="permissions_map" type="dict[tuple[int, int], int]">
+  A mapping from (start, end) address ranges to permission flags.
+</ParamField>
+
+<ParamField path="default_permissions" type="int" default="3">
+  Default memory permissions (read=1, write=2, execute=4).
+</ParamField>
+
+## Attributes
+
+<ResponseField name="regs" type="SimRegNameView">
+  A convenient view of the state's registers, where each register is a property.
+</ResponseField>
+
+<ResponseField name="mem" type="SimMemView">
+  A convenient view of the state's memory.
+</ResponseField>
+
+<ResponseField name="registers" type="DefaultMemory">
+  The state's register file as a flat memory region.
+</ResponseField>
+
+<ResponseField name="memory" type="DefaultMemory">
+  The state's memory as a flat memory region.
+</ResponseField>
+
+<ResponseField name="solver" type="SimSolver">
+  The symbolic solver and variable manager for this state.
+</ResponseField>
+
+<ResponseField name="inspect" type="SimInspector">
+  The breakpoint manager for debugging and instrumentation.
+</ResponseField>
+
+<ResponseField name="history" type="SimStateHistory">
+  Information about the state's execution history.
+</ResponseField>
+
+<ResponseField name="scratch" type="SimStateScratch">
+  Information about the current execution step.
+</ResponseField>
+
+<ResponseField name="posix" type="SimSystemPosix">
+  POSIX/operating system environment model.
+</ResponseField>
+
+<ResponseField name="callstack" type="CallStack">
+  The current call stack.
+</ResponseField>
+
+<ResponseField name="arch" type="Arch">
+  The architecture of the state.
+</ResponseField>
+
+<ResponseField name="options" type="SimStateOptions">
+  The set of options controlling state behavior.
+</ResponseField>
+
+<ResponseField name="mode" type="str">
+  The execution mode.
+</ResponseField>
+
+## Properties
+
+### Instruction Pointer Access
+
+<Accordion title="ip">
+  **Type:** `IPTypeSym`
+
+  Get or set the instruction pointer expression. Triggers SimInspect breakpoints and generates SimActions.
+
+  For read-only access without triggering breakpoints, use `_ip` instead.
+</Accordion>
+
+<Accordion title="_ip">
+  **Type:** `IPTypeSym`
+
+  Get or set the instruction pointer expression without triggering SimInspect breakpoints or generating SimActions.
+</Accordion>
+
+<Accordion title="addr">
+  **Type:** `IPTypeConc`
+
+  Get or set the concrete address of the instruction pointer. Returns an integer, or raises an exception if the instruction pointer is symbolic.
+</Accordion>
+
+## Methods
+
+### State Manipulation
+
+<Accordion title="copy()">
+  **Signature:**
+  ```python
+  def copy(self) -> SimState
+  ```
+
+  Returns a deep copy of the state.
+
+  **Returns:** `SimState` - A new state that is a copy of this one.
+</Accordion>
+
+<Accordion title="merge()">
+  **Signature:**
+  ```python
+  def merge(
+      self,
+      *others,
+      merge_conditions=None,
+      common_ancestor=None,
+      plugin_whitelist=None,
+      common_ancestor_history=None
+  ) -> tuple[SimState, list, bool]
+  ```
+
+  Merges this state with other states.
+
+  **Parameters:**
+  <ParamField path="others" type="SimState">
+    The states to merge with.
+  </ParamField>
+
+  <ParamField path="merge_conditions" type="list">
+    A tuple of conditions under which each state holds.
+  </ParamField>
+
+  <ParamField path="common_ancestor" type="SimState">
+    A state representing common history between the states.
+  </ParamField>
+
+  <ParamField path="plugin_whitelist" type="list[str]">
+    Only merge plugins in this list.
+  </ParamField>
+
+  **Returns:** `tuple[SimState, list, bool]` - (merged state, merge flag, whether merging occurred)
+</Accordion>
+
+<Accordion title="widen()">
+  **Signature:**
+  ```python
+  def widen(self, *others) -> tuple[SimState, bool]
+  ```
+
+  Perform a widening operation between this state and others.
+
+  **Parameters:**
+  <ParamField path="others" type="SimState">
+    States to widen with.
+  </ParamField>
+
+  **Returns:** `tuple[SimState, bool]` - (widened state, whether widening occurred)
+</Accordion>
+
+### Constraint Management
+
+<Accordion title="add_constraints()">
+  **Signature:**
+  ```python
+  def add_constraints(self, *constraints)
+  ```
+
+  Add symbolic constraints to the state.
+
+  **Parameters:**
+  <ParamField path="constraints" type="claripy.ast.Bool">
+    Any number of symbolic boolean expressions to add as constraints.
+  </ParamField>
+</Accordion>
+
+<Accordion title="satisfiable()">
+  **Signature:**
+  ```python
+  def satisfiable(self, **kwargs) -> bool
+  ```
+
+  Check whether the state's constraints are satisfiable.
+
+  **Returns:** `bool` - True if satisfiable, False otherwise.
+</Accordion>
+
+<Accordion title="simplify()">
+  **Signature:**
+  ```python
+  def simplify(self, *args)
+  ```
+
+  Simplify this state's constraints.
+</Accordion>
+
+<Accordion title="downsize()">
+  **Signature:**
+  ```python
+  def downsize(self)
+  ```
+
+  Clean up after the solver engine. Reduces memory usage when the state no longer needs to be solved.
+</Accordion>
+
+### Execution
+
+<Accordion title="step()">
+  **Signature:**
+  ```python
+  def step(self, **kwargs) -> SimSuccessors
+  ```
+
+  Perform a step of symbolic execution using this state.
+
+  **Parameters:** Any arguments to `AngrObjectFactory.successors` can be passed.
+
+  **Returns:** `SimSuccessors` - An object categorizing the results of the step.
+</Accordion>
+
+<Accordion title="block()">
+  **Signature:**
+  ```python
+  def block(self, *args, **kwargs) -> Block
+  ```
+
+  Represent the basic block at this state's instruction pointer.
+
+  **Parameters:** Any arguments to `AngrObjectFactory.block` can be passed.
+
+  **Returns:** `Block` - A Block object describing the code at this point.
+</Accordion>
+
+### Register and Memory Access
+
+<Accordion title="reg_concrete()">
+  **Signature:**
+  ```python
+  def reg_concrete(self, *args, **kwargs) -> int
+  ```
+
+  Returns the contents of a register, raising `SimValueError` if symbolic.
+
+  **Returns:** `int` - The concrete value in the register.
+</Accordion>
+
+<Accordion title="mem_concrete()">
+  **Signature:**
+  ```python
+  def mem_concrete(self, *args, **kwargs) -> int
+  ```
+
+  Returns the contents of memory, raising `SimValueError` if symbolic.
+
+  **Returns:** `int` - The concrete value in memory.
+</Accordion>
+
+### Stack Operations
+
+<Accordion title="stack_push()">
+  **Signature:**
+  ```python
+  def stack_push(self, thing)
+  ```
+
+  Push a value to the stack, adjusting the stack pointer.
+
+  **Parameters:**
+  <ParamField path="thing" type="claripy.ast.BV | int">
+    The value to push onto the stack.
+  </ParamField>
+</Accordion>
+
+<Accordion title="stack_pop()">
+  **Signature:**
+  ```python
+  def stack_pop(self) -> claripy.ast.BV
+  ```
+
+  Pop a value from the stack and return it. The length will be the architecture word size.
+
+  **Returns:** `claripy.ast.BV` - The popped value.
+</Accordion>
+
+<Accordion title="stack_read()">
+  **Signature:**
+  ```python
+  def stack_read(self, offset: int, length: int, bp=False) -> claripy.ast.BV
+  ```
+
+  Read bytes from the stack at an offset.
+
+  **Parameters:**
+  <ParamField path="offset" type="int">
+    The offset from the stack pointer.
+  </ParamField>
+
+  <ParamField path="length" type="int">
+    The number of bytes to read.
+  </ParamField>
+
+  <ParamField path="bp" type="bool" default="False">
+    If True, offset from BP instead of SP.
+  </ParamField>
+
+  **Returns:** `claripy.ast.BV` - The value read from the stack.
+</Accordion>
+
+### Utility Methods
+
+<Accordion title="make_concrete_int()">
+  **Signature:**
+  ```python
+  def make_concrete_int(self, expr) -> int
+  ```
+
+  Force an expression to be concrete by adding a constraint.
+
+  **Parameters:**
+  <ParamField path="expr" type="claripy.ast.BV | int">
+    The expression to concretize.
+  </ParamField>
+
+  **Returns:** `int` - The concrete value.
+</Accordion>
+
+<Accordion title="dbg_print_stack()">
+  **Signature:**
+  ```python
+  def dbg_print_stack(self, depth=None, sp=None) -> str
+  ```
+
+  Debug utility to print the current stack.
+
+  **Parameters:**
+  <ParamField path="depth" type="int">
+    Number of stack entries to print.
+  </ParamField>
+
+  <ParamField path="sp" type="int">
+    Stack pointer value to use.
+  </ParamField>
+
+  **Returns:** `str` - Formatted string representation of the stack.
+</Accordion>
+
+<Accordion title="set_mode()">
+  **Signature:**
+  ```python
+  def set_mode(self, mode: str)
+  ```
+
+  Change the execution mode of the state.
+
+  **Parameters:**
+  <ParamField path="mode" type="str">
+    The new mode (e.g., 'symbolic', 'static').
+  </ParamField>
+</Accordion>
+
+## Example Usage
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('/bin/ls')
+
+# Create a blank state
+state = proj.factory.blank_state()
+
+# Access registers
+state.regs.rax = 0x1234
+print(f"RAX = {state.regs.rax}")
+
+# Create symbolic values
+sym_arg = claripy.BVS('arg', 64)
+state.regs.rdi = sym_arg
+
+# Add constraints
+state.add_constraints(sym_arg > 0)
+state.add_constraints(sym_arg < 100)
+
+# Check satisfiability
+if state.satisfiable():
+    possible_value = state.solver.eval(sym_arg)
+    print(f"Possible value: {possible_value}")
+
+# Memory operations
+state.memory.store(0x1000, claripy.BVV(0xdeadbeef, 32))
+value = state.memory.load(0x1000, 4)
+
+# Stack operations
+state.stack_push(claripy.BVV(0x42, 64))
+popped = state.stack_pop()
+
+# Copy state
+state2 = state.copy()
+
+# Step execution
+successors = state.step()
+for succ_state in successors.successors:
+    print(f"Successor at {succ_state.addr:#x}")
+```

@@ -1,0 +1,432 @@
+---
+title: Exploration Techniques
+description: Guide exploration with custom techniques for symbolic execution
+---
+
+Exploration techniques are modular hooks that customize how angr explores paths through a binary. They allow you to implement search strategies, prune paths, manage state resources, and implement sophisticated analysis techniques.
+
+## Overview
+
+Exploration techniques hook into the simulation manager's execution loop by overriding methods that control path selection, stepping, and filtering. Any number of techniques can be combined to implement complex analysis strategies.
+
+### Core Concept
+
+All exploration techniques inherit from `ExplorationTechnique` base class (angr/exploration_techniques/base.py:9):
+
+```python
+from angr.exploration_techniques import ExplorationTechnique
+
+class MyTechnique(ExplorationTechnique):
+    def __init__(self):
+        super().__init__()
+        # Initialize your technique
+```
+
+## Hook Methods
+
+The base class defines five hook methods you can override:
+
+### setup(simgr)
+
+Called when the technique is added to a simulation manager. Use this to initialize stashes or configure the manager.
+
+```python
+def setup(self, simgr):
+    """Initialize custom stashes"""
+    if 'my_stash' not in simgr.stashes:
+        simgr.stashes['my_stash'] = []
+```
+
+### step(simgr, stash='active', **kwargs)
+
+Hook the stepping process. Must call `simgr.step()` to perform actual stepping.
+
+```python
+def step(self, simgr, stash='active', **kwargs):
+    # Pre-step logic
+    simgr = simgr.step(stash=stash, **kwargs)
+    # Post-step logic
+    return simgr
+```
+
+### filter(simgr, state, **kwargs)
+
+Determine which stash a state should be placed in after stepping.
+
+```python
+def filter(self, simgr, state, **kwargs):
+    if self.should_defer(state):
+        return 'deferred'
+    return simgr.filter(state, **kwargs)
+```
+
+### selector(simgr, state, **kwargs)
+
+Determine if a state should participate in the current stepping round.
+
+```python
+def selector(self, simgr, state, **kwargs):
+    if self.should_skip(state):
+        return False
+    return simgr.selector(state, **kwargs)
+```
+
+### successors(simgr, state, **kwargs)
+
+Customize how successors are computed for a state.
+
+```python
+def successors(self, simgr, state, **kwargs):
+    # Modify kwargs before stepping
+    kwargs['num_inst'] = 1  # Single-step
+    return simgr.successors(state, **kwargs)
+```
+
+### complete(simgr)
+
+Return True when exploration should stop. Unlike other hooks, don't call the base implementation.
+
+```python
+def complete(self, simgr):
+    return len(simgr.found) >= 5
+```
+
+## Built-in Techniques
+
+### DFS - Depth-First Search
+
+Keeps only one active path at a time, deferring others (angr/exploration_techniques/dfs.py:8):
+
+```python
+from angr.exploration_techniques import DFS
+
+simgr.use_technique(DFS(deferred_stash='deferred'))
+```
+
+<Accordion title="DFS Implementation">
+```python
+class DFS(ExplorationTechnique):
+    def __init__(self, deferred_stash="deferred"):
+        super().__init__()
+        self.deferred_stash = deferred_stash
+
+    def step(self, simgr, stash="active", **kwargs):
+        simgr = simgr.step(stash=stash, **kwargs)
+        if len(simgr.stashes[stash]) > 1:
+            # Keep only 1 active, defer the rest
+            simgr.split(from_stash=stash, 
+                       to_stash=self.deferred_stash, 
+                       limit=1)
+        
+        if len(simgr.stashes[stash]) == 0:
+            # Restore one from deferred
+            if len(simgr.stashes[self.deferred_stash]) > 0:
+                simgr.stashes[stash].append(
+                    simgr.stashes[self.deferred_stash].pop()
+                )
+        return simgr
+```
+</Accordion>
+
+### Explorer - Goal-Directed Search
+
+Find paths that reach target addresses while avoiding others (angr/exploration_techniques/explorer.py:15):
+
+```python
+from angr.exploration_techniques import Explorer
+
+# Find specific address
+simgr.use_technique(Explorer(find=0x401234))
+
+# Find multiple addresses, avoid others
+simgr.use_technique(Explorer(
+    find=[0x401234, 0x401567],
+    avoid=[0x401999, 0x401aaa],
+    num_find=3
+))
+
+# Custom condition functions
+simgr.use_technique(Explorer(
+    find=lambda s: b'SUCCESS' in s.posix.dumps(1),
+    avoid=lambda s: b'FAIL' in s.posix.dumps(1)
+))
+```
+
+<Note>
+Explorer can use a CFG to preemptively avoid paths that cannot reach find addresses without going through avoid addresses.
+</Note>
+
+### LengthLimiter - Path Length Limits
+
+Limit exploration depth (angr/exploration_techniques/lengthlimiter.py:6):
+
+```python
+from angr.exploration_techniques import LengthLimiter
+
+# Cut paths longer than 100 blocks
+simgr.use_technique(LengthLimiter(max_length=100))
+
+# Drop instead of moving to 'cut' stash
+simgr.use_technique(LengthLimiter(max_length=100, drop=True))
+```
+
+### Spiller - Memory Management
+
+Spill states to disk to manage memory (angr/exploration_techniques/spiller.py:141):
+
+```python
+from angr.exploration_techniques import Spiller
+
+# Keep 5-10 states in memory, spill others
+simgr.use_technique(Spiller(min=5, max=10))
+
+# Custom priority function
+def my_priority(state):
+    return state.history.block_count  # Prefer shorter paths
+
+simgr.use_technique(Spiller(
+    min=5, max=10,
+    priority_key=my_priority
+))
+```
+
+### Oppologist - Error Recovery
+
+Use Unicorn engine to bypass unsupported instructions (angr/exploration_techniques/oppologist.py:17):
+
+```python
+from angr.exploration_techniques import Oppologist
+
+# Automatically retry failed instructions with Unicorn
+simgr.use_technique(Oppologist())
+```
+
+## Creating Custom Techniques
+
+<Steps>
+
+### Identify Hook Points
+
+Determine which methods you need to override:
+- `step`: Control stepping behavior
+- `filter`: Custom state categorization  
+- `selector`: State selection for stepping
+- `successors`: Customize successor generation
+- `complete`: Custom completion condition
+
+### Implement Your Technique
+
+```python
+from angr.exploration_techniques import ExplorationTechnique
+
+class TargetedExploration(ExplorationTechnique):
+    """Prioritize paths closer to target address"""
+    
+    def __init__(self, target_addr):
+        super().__init__()
+        self.target_addr = target_addr
+        
+    def setup(self, simgr):
+        # Initialize custom stash
+        if 'close' not in simgr.stashes:
+            simgr.stashes['close'] = []
+    
+    def filter(self, simgr, state, **kwargs):
+        # Categorize states by distance to target
+        if self._is_close(state):
+            return 'close'
+        return simgr.filter(state, **kwargs)
+    
+    def _is_close(self, state):
+        # Simple heuristic: check address proximity
+        if state.solver.symbolic(state.regs.rip):
+            return False
+        current = state.solver.eval(state.regs.rip)
+        return abs(current - self.target_addr) < 0x1000
+```
+
+### Apply the Technique
+
+```python
+technique = TargetedExploration(target_addr=0x401234)
+simgr.use_technique(technique)
+simgr.run()
+```
+
+</Steps>
+
+## Advanced Example: Custom Search Strategy
+
+Combine multiple techniques for sophisticated analysis:
+
+```python
+import angr
+from angr.exploration_techniques import ExplorationTechnique
+
+class BugHunter(ExplorationTechnique):
+    """Hunt for buffer overflow vulnerabilities"""
+    
+    def __init__(self, buffer_addr, buffer_size):
+        super().__init__()
+        self.buffer_addr = buffer_addr
+        self.buffer_size = buffer_size
+        self.vulnerabilities = []
+        
+    def setup(self, simgr):
+        simgr.stashes['vulnerable'] = []
+        
+    def filter(self, simgr, state, **kwargs):
+        # Check for buffer overflow
+        if self._check_overflow(state):
+            self.vulnerabilities.append({
+                'state': state,
+                'addr': state.addr,
+                'constraints': state.solver.constraints
+            })
+            return 'vulnerable'
+        return simgr.filter(state, **kwargs)
+    
+    def _check_overflow(self, state):
+        # Add breakpoint on memory writes
+        for action in state.history.actions.hardcopy:
+            if action.type == 'mem' and action.action == 'write':
+                write_addr = action.addr.ast
+                # Check if write is outside buffer bounds
+                overflow_constraint = state.solver.Or(
+                    write_addr < self.buffer_addr,
+                    write_addr >= self.buffer_addr + self.buffer_size
+                )
+                if state.solver.satisfiable(extra_constraints=[overflow_constraint]):
+                    return True
+        return False
+    
+    def complete(self, simgr):
+        # Stop after finding 5 vulnerabilities
+        return len(self.vulnerabilities) >= 5
+
+# Usage
+project = angr.Project('/path/to/binary')
+state = project.factory.entry_state()
+simgr = project.factory.simulation_manager(state)
+
+bug_hunter = BugHunter(buffer_addr=0x804a000, buffer_size=256)
+simgr.use_technique(bug_hunter)
+simgr.run()
+
+print(f"Found {len(bug_hunter.vulnerabilities)} potential vulnerabilities")
+```
+
+## Combining Techniques
+
+Multiple techniques can be used together:
+
+```python
+from angr.exploration_techniques import DFS, LengthLimiter, Explorer
+
+simgr.use_technique(DFS())
+simgr.use_technique(LengthLimiter(max_length=200))
+simgr.use_technique(Explorer(find=0x401234, avoid=0x401999))
+
+simgr.run()
+```
+
+<Warning>
+Technique order matters! Techniques are called in the order they were added. Earlier techniques can affect the behavior of later ones.
+</Warning>
+
+## Technique Registration
+
+The hook system uses method inspection to determine which hooks are overridden (angr/exploration_techniques/base.py:22):
+
+```python
+def _get_hooks(self):
+    return {name: getattr(self, name) 
+            for name in self._hook_list 
+            if self._is_overridden(name)}
+
+def _is_overridden(self, name):
+    return (getattr(self, name).__code__ is not 
+            getattr(ExplorationTechnique, name).__code__)
+```
+
+## Best Practices
+
+<Steps>
+
+### Always Call Base Implementation
+
+Unless you're completely replacing behavior, call the base implementation:
+
+```python
+def filter(self, simgr, state, **kwargs):
+    # Your logic
+    if custom_condition:
+        return 'custom_stash'
+    # Defer to base behavior
+    return simgr.filter(state, **kwargs)
+```
+
+### Return the SimulationManager
+
+Always return the (possibly modified) simulation manager from `step`:
+
+```python
+def step(self, simgr, stash='active', **kwargs):
+    simgr = simgr.step(stash=stash, **kwargs)
+    # Modifications
+    return simgr  # Don't forget!
+```
+
+### Use Stashes for Organization
+
+Create custom stashes in `setup()` to organize states:
+
+```python
+def setup(self, simgr):
+    simgr.stashes['interesting'] = []
+    simgr.stashes['boring'] = []
+```
+
+### Handle Edge Cases
+
+Check for empty stashes and symbolic values:
+
+```python
+def filter(self, simgr, state, **kwargs):
+    if state.solver.symbolic(state.regs.rip):
+        # Can't evaluate symbolic instruction pointer
+        return simgr.filter(state, **kwargs)
+    # Your logic here
+```
+
+</Steps>
+
+## Reference
+
+### Available Techniques
+
+| Technique | Purpose | Source |
+|-----------|---------|--------|
+| DFS | Depth-first search | dfs.py:8 |
+| Explorer | Goal-directed search | explorer.py:15 |
+| LengthLimiter | Limit path length | lengthlimiter.py:6 |
+| Spiller | Memory management | spiller.py:141 |
+| Oppologist | Error recovery | oppologist.py:17 |
+| LoopSeer | Loop detection | loop_seer.py |
+| Veritesting | Static symbolic execution | veritesting.py |
+| Threading | Concolic execution | threading.py |
+| DrillerCore | Concolic drilling | driller_core.py |
+| MemoryWatcher | Memory usage monitoring | memory_watcher.py |
+| ManualMergepoint | Manual state merging | manual_mergepoint.py |
+| Bucketizer | State bucketing | bucketizer.py |
+
+### Hook Method Signatures
+
+```python
+def setup(self, simgr: SimulationManager) -> None
+def step(self, simgr: SimulationManager, stash: str = 'active', **kwargs) -> SimulationManager
+def filter(self, simgr: SimulationManager, state: SimState, **kwargs) -> str
+def selector(self, simgr: SimulationManager, state: SimState, **kwargs) -> bool
+def successors(self, simgr: SimulationManager, state: SimState, **kwargs) -> SimSuccessors
+def complete(self, simgr: SimulationManager) -> bool
+```

@@ -1,0 +1,383 @@
+---
+title: Binary Loading with CLE
+description: Understanding how angr loads binaries and manages dependencies with CLE
+---
+
+CLE (CLE Loads Everything) is angr's binary loading component. It takes a binary file and its dependencies and presents them to angr in a unified virtual address space.
+
+## The Loader
+
+The loader is available through the `project.loader` property:
+
+```python
+import angr
+
+proj = angr.Project('examples/fauxware/fauxware')
+proj.loader
+# <Loaded fauxware, maps [0x400000:0x5008000]>
+```
+
+### Basic Properties
+
+```python
+# Address space bounds
+proj.loader.min_addr  # 0x400000
+proj.loader.max_addr  # 0x5008000
+
+# Main binary object
+proj.loader.main_object
+# <ELF Object fauxware, maps [0x400000:0x60105f]>
+
+# All loaded objects
+proj.loader.all_objects
+# [<ELF Object fauxware, maps [0x400000:0x60105f]>,
+#  <ELF Object libc-2.23.so, maps [0x1000000:0x13c999f]>,
+#  <ELF Object ld-2.23.so, maps [0x2000000:0x2227167]>,
+#  ...]
+```
+
+## Loaded Objects
+
+CLE loads multiple binary objects into a single memory space:
+
+### Object Collections
+
+```python
+# Dictionary of shared objects
+proj.loader.shared_objects
+# {'fauxware': <ELF Object fauxware, maps [0x400000:0x60105f]>,
+#  'libc.so.6': <ELF Object libc-2.23.so, maps [0x1000000:0x13c999f]>,
+#  'ld-linux-x86-64.so.2': <ELF Object ld-2.23.so, maps [0x2000000:0x2227167]>}
+
+# All ELF objects (use all_pe_objects for Windows)
+proj.loader.all_elf_objects
+
+# Special objects
+proj.loader.extern_object  # Provides addresses for unresolved imports
+proj.loader.kernel_object  # Provides addresses for emulated syscalls
+
+# Find object containing an address
+proj.loader.find_object_containing(0x400000)
+# <ELF Object fauxware, maps [0x400000:0x60105f]>
+```
+
+## Working with Objects
+
+### Object Properties
+
+Each loaded object provides extensive metadata:
+
+```python
+obj = proj.loader.main_object
+
+# Entry point
+obj.entry  # 0x400580
+
+# Address bounds
+obj.min_addr  # 0x400000
+obj.max_addr  # 0x60105f
+
+# Segments and sections
+obj.segments
+# <Regions: [<ELFSegment memsize=0xa74, filesize=0xa74, vaddr=0x400000, flags=0x5, offset=0x0>,
+#            <ELFSegment memsize=0x238, filesize=0x228, vaddr=0x600e28, flags=0x6, offset=0xe28>]>
+
+obj.sections
+# <Regions: [<.text | offset 0x580, vaddr 0x400580, size 0x338>,
+#            <.rodata | offset 0x8b8, vaddr 0x4008b8, size 0x54>,
+#            ...]>
+```
+
+### Finding Segments and Sections
+
+```python
+# Get segment/section containing an address
+obj.find_segment_containing(obj.entry)
+# <ELFSegment memsize=0xa74, filesize=0xa74, vaddr=0x400000, flags=0x5, offset=0x0>
+
+obj.find_section_containing(obj.entry)
+# <.text | offset 0x580, vaddr 0x400580, size 0x338>
+```
+
+### PLT and GOT
+
+```python
+# Get PLT stub address for a symbol
+addr = obj.plt['strcmp']
+addr  # 0x400550
+
+# Reverse lookup
+obj.reverse_plt[addr]  # 'strcmp'
+```
+
+### Binary Properties
+
+```python
+# Base addresses
+obj.linked_base   # Prelinked base (from binary)
+obj.mapped_base   # Actual mapped base (by CLE)
+
+# Binary characteristics
+obj.execstack     # Does binary have executable stack?
+obj.pic           # Is binary position-independent?
+```
+
+## Symbols and Relocations
+
+### Finding Symbols
+
+```python
+# Find symbol by name
+strcmp = proj.loader.find_symbol('strcmp')
+strcmp
+# <Symbol "strcmp" in libc.so.6 at 0x1089cd0>
+
+strcmp.name          # 'strcmp'
+strcmp.owner         # <ELF Object libc-2.23.so, ...>
+strcmp.rebased_addr  # 0x1089cd0 (global address space)
+strcmp.linked_addr   # 0x89cd0 (relative to prelinked base)
+strcmp.relative_addr # 0x89cd0 (RVA - relative to object base)
+```
+
+<Note>
+The three address types serve different purposes:
+- `rebased_addr` - use for angr analysis (global address space)
+- `linked_addr` - matches addresses from `readelf` or other tools
+- `relative_addr` - relative virtual address (RVA), used in Windows literature
+</Note>
+
+### Symbol Properties
+
+```python
+# Symbol from main object (import)
+main_strcmp = proj.loader.main_object.get_symbol('strcmp')
+main_strcmp.is_import  # True
+main_strcmp.is_export  # False
+main_strcmp.resolvedby # <Symbol "strcmp" in libc.so.6 at 0x1089cd0>
+
+# Symbol from libc (export)
+strcmp.is_export  # True
+strcmp.is_import  # False
+```
+
+### Relocations
+
+Relocations specify how to wire up imports with exports:
+
+```python
+# Get all relocations for an object
+obj.relocs
+
+# Get imports (mapping from symbol name to Relocation)
+proj.loader.shared_objects['libc.so.6'].imports
+# {'__libc_enable_secure': <R_X86_64_GLOB_DAT at 0x...>,
+#  '__tls_get_addr': <R_X86_64_JUMP_SLOT at 0x...>,
+#  ...}
+```
+
+A relocation has:
+- `.symbol` - the import symbol
+- `.owner` - the object requesting the relocation  
+- Address identifiers (same as Symbol)
+
+<Warning>
+If an import cannot be resolved, CLE automatically adds it to the externs object as an export, allowing analysis to continue.
+</Warning>
+
+## Loading Options
+
+You can customize how CLE loads binaries by passing options to `Project()`:
+
+### Basic Options
+
+```python
+import angr
+
+# Don't automatically load shared libraries
+proj = angr.Project('./binary', auto_load_libs=False)
+
+# Throw exception if a library dependency is missing
+proj = angr.Project('./binary', except_missing_libs=True)
+
+# Force loading specific libraries
+proj = angr.Project('./binary', force_load_libs=['libcustom.so'])
+
+# Skip loading specific libraries
+proj = angr.Project('./binary', skip_libs=['libunneeded.so'])
+
+# Add custom library search paths
+proj = angr.Project('./binary', ld_path=['/custom/lib/path'])
+```
+
+<ParamField path="auto_load_libs" type="bool" default="True">
+  Automatically resolve and load shared library dependencies
+</ParamField>
+
+<ParamField path="except_missing_libs" type="bool" default="False">
+  Throw exception when a library dependency cannot be resolved
+</ParamField>
+
+<ParamField path="force_load_libs" type="list[str]">
+  Treat these as unresolved dependencies even if not in the binary
+</ParamField>
+
+<ParamField path="skip_libs" type="list[str]">
+  Don't load these libraries even if they're dependencies
+</ParamField>
+
+<ParamField path="ld_path" type="str | list[str]">
+  Additional search paths for shared libraries
+</ParamField>
+
+### Per-Binary Options
+
+You can specify options for individual binaries:
+
+```python
+# Options for main binary
+main_opts = {
+    'backend': 'elf',
+    'base_addr': 0x400000,
+}
+
+# Options for specific libraries
+lib_opts = {
+    'libc.so.6': {
+        'backend': 'elf'
+    }
+}
+
+proj = angr.Project('./binary', main_opts=main_opts, lib_opts=lib_opts)
+```
+
+Common per-binary options:
+
+<ParamField path="backend" type="str | class">
+  Which backend to use (elf, pe, blob, etc.)
+</ParamField>
+
+<ParamField path="base_addr" type="int">
+  Base address to load the binary at
+</ParamField>
+
+<ParamField path="entry_point" type="int">
+  Override the entry point
+</ParamField>
+
+<ParamField path="arch" type="str">
+  Architecture name (required for some backends like blob)
+</ParamField>
+
+## Backends
+
+CLE supports multiple file formats through different backends:
+
+| Backend | Description | Requires arch? |
+|---------|-------------|----------------|
+| `elf` | ELF files (Linux, BSD) | No |
+| `pe` | PE files (Windows) | No |
+| `mach-o` | Mach-O files (macOS) | No |
+| `cgc` | Cyber Grand Challenge binaries | No |
+| `elfcore` | ELF core dumps | No |
+| `blob` | Flat binary image | Yes |
+
+### Loading Flat Binaries
+
+For raw binary files (firmware, shellcode, etc.), use the blob backend:
+
+```python
+# Load flat binary
+proj = angr.Project(
+    'firmware.bin',
+    main_opts={
+        'backend': 'blob',
+        'arch': 'arm',
+        'base_addr': 0x8000,
+        'entry_point': 0x8000
+    }
+)
+```
+
+## SimProcedures and Hooking
+
+By default, CLE and Project work together to replace library functions with SimProcedures:
+
+<Steps>
+
+<Step title="CLE loads the binary and dependencies">
+CLE identifies which libraries the binary needs and loads them.
+</Step>
+
+<Step title="Project identifies library functions">
+Project scans the loaded objects for known library functions.
+</Step>
+
+<Step title="Functions are replaced with SimProcedures">
+Known library functions are hooked with Python implementations (SimProcedures) instead of their actual code.
+</Step>
+
+</Steps>
+
+### Controlling SimProcedure Usage
+
+```python
+# Disable all SimProcedures
+proj = angr.Project('./binary', use_sim_procedures=False)
+
+# Exclude specific functions from SimProcedures
+proj = angr.Project('./binary', 
+    exclude_sim_procedures_list=['malloc', 'free'])
+
+# Exclude functions based on a condition
+def should_exclude(name):
+    return name.startswith('str')
+
+proj = angr.Project('./binary',
+    exclude_sim_procedures_func=should_exclude)
+```
+
+<Note>
+SimProcedures dramatically improve analysis tractability but may introduce inaccuracies. If you need to analyze the actual implementation of a library function, exclude it from SimProcedures.
+</Note>
+
+### Behavior Without SimProcedures
+
+When a library function has no SimProcedure:
+
+- If `auto_load_libs=True`: The real library function executes (may cause state explosion)
+- If `auto_load_libs=False`: Function is replaced with `ReturnUnconstrained` stub (returns symbolic value)
+
+## Example: Analyzing a Binary
+
+```python
+import angr
+
+# Load binary without shared libraries
+proj = angr.Project('./vulnerable_program', auto_load_libs=False)
+
+# Examine loaded objects
+print(f"Main object: {proj.loader.main_object}")
+print(f"Entry point: {proj.loader.main_object.entry:#x}")
+print(f"Address space: {proj.loader.min_addr:#x} - {proj.loader.max_addr:#x}")
+
+# Find a specific function
+func_symbol = proj.loader.find_symbol('vulnerable_function')
+if func_symbol:
+    print(f"Found function at: {func_symbol.rebased_addr:#x}")
+    
+    # Get the section containing it
+    section = proj.loader.main_object.find_section_containing(
+        func_symbol.rebased_addr
+    )
+    print(f"Function in section: {section.name}")
+
+# Check what libraries would have been loaded
+for lib in proj.loader.missing_dependencies:
+    print(f"Missing library: {lib}")
+```
+
+## See Also
+
+- [angr.Project](/core-concepts/projects)
+- [Symbolic Function Summaries (SimProcedures)](/advanced-topics/simprocedures)
+- [CLE API Documentation](https://docs.angr.io/projects/cle)

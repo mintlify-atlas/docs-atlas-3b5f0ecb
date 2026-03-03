@@ -1,0 +1,564 @@
+---
+title: Execution Engines
+description: Understanding and extending angr's execution engines
+---
+
+Execution engines are the core components that perform symbolic execution in angr. They understand how to execute instructions, handle different IRs (Intermediate Representations), and generate successor states.
+
+## Overview
+
+angr uses a modular engine architecture where different engines handle different execution modes:
+
+- **VEX Engine**: Symbolic execution of VEX IR (default)
+- **Unicorn Engine**: Fast concrete execution using Qemu
+- **Pcode Engine**: Execution of Ghidra's P-code IR  
+- **Hook Engine**: Execute SimProcedures at hooked addresses
+- **Syscall Engine**: Handle system calls
+- **Failure Engine**: Handle execution failures gracefully
+
+## Engine Architecture
+
+### Base Engine Class
+
+All engines inherit from `SimEngine` (angr/engines/engine.py:14):
+
+```python
+from angr.engines import SimEngine
+
+class SimEngine:
+    """Base class for execution engines"""
+    
+    def __init__(self, project):
+        self.project = project
+        self.arch = self.project.arch
+```
+
+### The UberEngine
+
+angr's default engine combines multiple engine capabilities using mixins (angr/engines/__init__.py:15):
+
+```python
+class UberEngine(
+    SimEngineFailure,      # Handle failures
+    SimEngineSyscall,      # System calls
+    HooksMixin,            # Hooked addresses
+    SimEngineUnicorn,      # Unicorn concrete execution
+    SuperFastpathMixin,    # Optimized paths
+    TrackActionsMixin,     # Track memory/register actions
+    SimInspectMixin,       # Breakpoint support
+    HeavyResilienceMixin,  # Error recovery
+    SootMixin,             # Java support
+    AILMixin,              # AIL IR support
+    HeavyVEXMixin,         # VEX IR execution
+):
+    """Default engine with all common functionality"""
+```
+
+<Note>
+The order of mixins matters! Earlier mixins take precedence and can intercept execution before later mixins.
+</Note>
+
+## VEX Engine
+
+The primary engine for symbolic execution. It lifts binary code to VEX IR and symbolically executes it.
+
+### How VEX Execution Works
+
+<Steps>
+
+### Lift Instructions
+
+Binary code is lifted to VEX IR (Intermediate Representation):
+
+```python
+import angr
+
+project = angr.Project('/bin/ls')
+
+# Lift a block to VEX
+irsb = project.factory.block(0x401000).vex
+print(irsb)  # VEX IR statements
+```
+
+### Execute IR Statements
+
+The VEX engine processes each statement, updating the state:
+
+```python
+# Example VEX statements:
+# t0 = GET:I64(rsp)          # Read register
+# STle(t0) = 0x1234::I64     # Write memory  
+# PUT(rip) = 0x401005::I64   # Update PC
+```
+
+### Generate Successors
+
+The engine produces successor states based on control flow:
+
+```python
+state = project.factory.entry_state()
+successors = project.factory.successors(state)
+
+print(f"Successors: {len(successors.successors)}")
+for succ in successors.successors:
+    print(f"  -> {succ.addr:#x}")
+```
+
+</Steps>
+
+### VEX Engine Features
+
+```python
+import angr
+from angr import sim_options as so
+
+# Enable VEX-specific options
+state = project.factory.entry_state(add_options={
+    so.SYMBOLIC_WRITE_ADDRESSES,  # Allow symbolic writes
+    so.TRACK_MEMORY_ACTIONS,      # Track all memory ops
+    so.TRACK_REGISTER_ACTIONS,    # Track register ops
+    so.TRACK_JMP_ACTIONS,         # Track jumps
+})
+
+# Step with VEX engine (default)
+simgr = project.factory.simulation_manager(state)
+simgr.step()  # Uses VEX engine
+```
+
+## Unicorn Engine
+
+Unicorn provides fast concrete execution using Qemu's JIT. It's much faster than symbolic execution for concrete values.
+
+### Enabling Unicorn
+
+```python
+import angr
+from angr import sim_options as so
+
+# Enable Unicorn
+state = project.factory.entry_state(add_options={
+    so.UNICORN,  # Enable Unicorn engine
+})
+
+# Configure Unicorn behavior
+state.unicorn.max_steps = 100  # Max steps before switching back
+state.unicorn.countdown_symbolic_stop = 0  # Stop on symbolic data
+state.unicorn.countdown_unsupported_stop = 0  # Stop on unsupported insn
+```
+
+### When Unicorn Activates
+
+Unicorn automatically activates when:
+1. Unicorn is enabled in state options
+2. All values are concrete (no symbolic data)
+3. No active breakpoints in the region
+
+```python
+import angr
+from angr import sim_options as so
+
+project = angr.Project('/bin/ls')
+
+# Fully concrete state - Unicorn will activate
+state = project.factory.entry_state(
+    args=['ls', '/tmp'],
+    add_options={so.UNICORN}
+)
+
+simgr = project.factory.simulation_manager(state)
+simgr.run(until=lambda sm: len(sm.active) == 0)
+
+# Check if Unicorn was used
+for state in simgr.deadended:
+    if hasattr(state.history, 'recent_unicorn_count'):
+        print(f"Unicorn executed {state.history.recent_unicorn_count} steps")
+```
+
+### Unicorn Configuration
+
+```python
+class UnicornConfig:
+    """Configure Unicorn engine behavior"""
+    
+    def __init__(self, state):
+        # Maximum consecutive Unicorn steps
+        state.unicorn.max_steps = 1000
+        
+        # Stop conditions (countdown to 0)
+        state.unicorn.countdown_symbolic_stop = 1
+        state.unicorn.countdown_unsupported_stop = 1  
+        state.unicorn.countdown_nonunicorn_blocks = 1
+        state.unicorn.countdown_stop_point = 1
+        
+        # Aggressive concretization for speed
+        state.options.add(so.UNICORN_AGGRESSIVE_CONCRETIZATION)
+```
+
+<Warning>
+Unicorn doesn't support symbolic execution. It will stop and fall back to VEX when it encounters symbolic data.
+</Warning>
+
+## Syscall Engine
+
+Handles system calls by routing to SimProcedures or default handlers.
+
+### Syscall Handling
+
+```python
+import angr
+
+project = angr.Project('/bin/cat')
+state = project.factory.entry_state()
+
+# Syscalls are automatically handled
+# The SyscallEngine checks for hooks first
+project.simos.syscall_library.update({
+    1: 'write',  # Map syscall number to procedure
+    2: 'open',
+})
+
+# Custom syscall handler
+from angr import SimProcedure
+
+class MySyscall(SimProcedure):
+    def run(self, arg1, arg2):
+        print(f"Syscall at {self.state.addr:#x}")
+        return 0
+
+# Hook syscall number
+project.simos.syscall_library[59] = MySyscall  # execve
+```
+
+## Custom Engines
+
+### Creating a Simple Engine
+
+Implement a custom engine for specialized execution:
+
+```python
+from angr.engines import SimEngine
+from angr.engines.successors import SimSuccessors
+
+class TraceEngine(SimEngine):
+    """Engine that just traces execution"""
+    
+    def process(self, state, **kwargs):
+        """Process a state and return successors"""
+        successors = SimSuccessors(state.addr, state)
+        
+        # Log current instruction
+        print(f"Executing at {state.addr:#x}")
+        
+        # Get instruction bytes
+        insn_bytes = state.memory.load(state.addr, 16)
+        print(f"  Bytes: {insn_bytes}")
+        
+        # Let VEX engine do actual execution
+        # (We're just wrapping it)
+        vex_engine = HeavyVEXMixin(self.project)
+        return vex_engine.process(state, **kwargs)
+```
+
+### Using Custom Engines
+
+```python
+# Register custom engine
+project.engines.register_engine('trace', TraceEngine)
+
+# Use it
+state = project.factory.entry_state()
+simgr = project.factory.simulation_manager(state)
+
+# Specify engine
+simgr.step(engine='trace')
+```
+
+### Engine Mixins
+
+Create reusable engine components:
+
+```python
+class LoggingMixin:
+    """Mixin that logs all state transitions"""
+    
+    def process(self, state, **kwargs):
+        print(f"[LOG] Processing state at {state.addr:#x}")
+        print(f"[LOG] Options: {state.options}")
+        
+        # Call next mixin in chain
+        result = super().process(state, **kwargs)
+        
+        print(f"[LOG] Generated {len(result.successors)} successors")
+        return result
+
+class MyEngine(LoggingMixin, HeavyVEXMixin):
+    """VEX engine with logging"""
+    pass
+```
+
+## Engine Selection
+
+angr automatically selects engines based on state and configuration:
+
+```python
+import angr
+from angr import sim_options as so
+
+project = angr.Project('/bin/ls')
+
+# Different engine configurations
+
+# 1. VEX-only (symbolic)
+vex_state = project.factory.entry_state()
+
+# 2. Unicorn preferred (concrete)
+unicorn_state = project.factory.entry_state(
+    add_options={so.UNICORN},
+    args=['ls', '/tmp']  # Concrete arguments
+)
+
+# 3. Custom engine priorities
+class MyEngineSelector:
+    def select_engine(self, state):
+        if state.addr in hooked_addrs:
+            return 'hook'
+        elif state.solver.symbolic(state.regs.rip):
+            return 'vex'
+        else:
+            return 'unicorn'
+```
+
+## Advanced Engine Usage
+
+### Engine with State Inspection
+
+```python
+from angr.engines import SimEngine
+from angr.engines.successors import SimSuccessors
+
+class InspectingEngine(SimEngine):
+    """Engine with detailed state inspection"""
+    
+    def process(self, state, **kwargs):
+        # Add inspection breakpoints
+        state.inspect.b(
+            'mem_read',
+            when=angr.BP_AFTER,
+            action=self.log_read
+        )
+        
+        state.inspect.b(
+            'mem_write', 
+            when=angr.BP_AFTER,
+            action=self.log_write
+        )
+        
+        # Execute normally
+        return super().process(state, **kwargs)
+    
+    def log_read(self, state):
+        addr = state.inspect.mem_read_address
+        expr = state.inspect.mem_read_expr
+        print(f"Read from {addr}: {expr}")
+    
+    def log_write(self, state):
+        addr = state.inspect.mem_write_address
+        expr = state.inspect.mem_write_expr
+        print(f"Write to {addr}: {expr}")
+```
+
+### Conditional Engine Switching
+
+```python
+class AdaptiveEngine(SimEngine):
+    """Switch engines based on conditions"""
+    
+    def process(self, state, **kwargs):
+        # Check state characteristics
+        if self._should_use_unicorn(state):
+            state.options.add(so.UNICORN)
+        else:
+            state.options.discard(so.UNICORN)
+        
+        return super().process(state, **kwargs)
+    
+    def _should_use_unicorn(self, state):
+        # Use Unicorn for concrete tight loops
+        if state.addr in self.loop_headers:
+            # Check if loop variables are concrete
+            return not state.solver.symbolic(state.regs.rcx)
+        return False
+```
+
+## Engine Optimization
+
+### Fast Path Execution
+
+Optimize common execution patterns:
+
+```python
+from angr import sim_options as so
+
+# Enable fast path optimizations
+state = project.factory.entry_state(add_options={
+    so.FAST_MEMORY,     # Faster memory model
+    so.FAST_REGISTERS,  # Faster register model  
+})
+
+# Or remove slow tracking
+state = project.factory.entry_state(remove_options={
+    so.TRACK_MEMORY_ACTIONS,
+    so.TRACK_REGISTER_ACTIONS,
+    so.TRACK_JMP_ACTIONS,
+})
+```
+
+### Selective Symbolism
+
+Keep most data concrete for speed:
+
+```python
+import angr
+from angr import sim_options as so
+
+project = angr.Project('/bin/target')
+
+# Concrete stdin with symbolic portion
+stdin_content = b'A' * 100 + angr.claripy.BVS('input', 8*20)
+
+state = project.factory.entry_state(
+    stdin=angr.storage.SimFile(
+        '/dev/stdin',
+        content=stdin_content
+    ),
+    add_options={so.UNICORN}  # Fast concrete execution
+)
+
+# Execution will be concrete until symbolic data is read
+simgr = project.factory.simulation_manager(state)
+simgr.run()
+```
+
+## Engine Debugging
+
+### Trace Engine Execution
+
+```python
+import logging
+
+# Enable engine logging
+logging.getLogger('angr.engines').setLevel(logging.DEBUG)
+logging.getLogger('angr.engines.vex').setLevel(logging.DEBUG)
+logging.getLogger('angr.engines.unicorn').setLevel(logging.DEBUG)
+
+# Step with logging
+simgr.step()
+```
+
+### Inspect Engine State
+
+```python
+def inspect_engine(state):
+    """Inspect which engine is being used"""
+    print(f"State at {state.addr:#x}")
+    print(f"Options: {state.options}")
+    
+    # Check Unicorn status
+    if hasattr(state, 'unicorn'):
+        print(f"Unicorn enabled: {so.UNICORN in state.options}")
+        print(f"Unicorn steps: {state.unicorn.steps}")
+    
+    # Check hooks
+    if state.project.is_hooked(state.addr):
+        hook = state.project.hooked_by(state.addr)
+        print(f"Hooked: {hook}")
+
+state.inspect.b('engine_process', 
+                when=angr.BP_BEFORE,
+                action=inspect_engine)
+```
+
+## Best Practices
+
+<Steps>
+
+### Use Unicorn for Concrete Execution
+
+Enable Unicorn when inputs are concrete for 100x+ speedup:
+
+```python
+state = project.factory.entry_state(
+    args=['program', 'concrete_arg'],
+    add_options={so.UNICORN}
+)
+```
+
+### Minimize State Options
+
+Disable unnecessary tracking for better performance:
+
+```python
+state = project.factory.entry_state(
+    remove_options={
+        so.TRACK_MEMORY_ACTIONS,
+        so.TRACK_REGISTER_ACTIONS,
+    }
+)
+```
+
+### Create Custom Engines for Special Cases
+
+Implement custom engines for domain-specific execution:
+
+```python
+class SpecializedEngine(SimEngine):
+    """Optimized for specific binary patterns"""
+    
+    def process(self, state, **kwargs):
+        # Custom logic for your use case
+        pass
+```
+
+### Combine Engines Strategically
+
+Use the right engine for each execution phase:
+
+```python
+# Start with Unicorn for initialization
+state.options.add(so.UNICORN)
+simgr.run(until=lambda sm: sm.active[0].addr == 0x401234)
+
+# Switch to symbolic for critical section  
+for s in simgr.active:
+    s.options.discard(so.UNICORN)
+
+simgr.run(until=lambda sm: sm.active[0].addr == 0x401567)
+```
+
+</Steps>
+
+## Reference
+
+### Available Engines
+
+| Engine | Purpose | Module |
+|--------|---------|--------|
+| UberEngine | Default multi-engine | engines/__init__.py:15 |
+| HeavyVEXMixin | VEX IR symbolic execution | engines/vex/heavy/ |
+| SimEngineUnicorn | Concrete execution | engines/unicorn.py |
+| SimEngineSyscall | System call handling | engines/syscall.py |
+| HooksMixin | Hook/SimProcedure execution | engines/hook.py |
+| SimEngineFailure | Failure handling | engines/failure.py |
+| HeavyPcodeMixin | P-code IR execution | engines/pcode/ |
+
+### Common State Options
+
+| Option | Effect |
+|--------|--------|
+| UNICORN | Enable Unicorn concrete execution |
+| UNICORN_AGGRESSIVE_CONCRETIZATION | Concretize for Unicorn |
+| FAST_MEMORY | Faster memory model |
+| FAST_REGISTERS | Faster register model |
+| TRACK_MEMORY_ACTIONS | Track memory operations |
+| TRACK_REGISTER_ACTIONS | Track register operations |
+| SYMBOLIC_WRITE_ADDRESSES | Allow symbolic memory writes |

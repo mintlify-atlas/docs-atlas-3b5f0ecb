@@ -1,0 +1,376 @@
+---
+title: Engines API
+description: Execution engines for binary analysis and symbolic execution in angr
+---
+
+angr's execution engines are responsible for taking a state and producing successor states. The engine system is modular, with base classes and mixins that can be composed to create custom execution engines.
+
+## SimEngine
+
+The base class for all execution engines.
+
+```python
+class SimEngine(Generic[StateType, ResultType], metaclass=abc.ABCMeta)
+```
+
+<ParamField path="project" type="angr.Project" required>
+  The angr project this engine belongs to
+</ParamField>
+
+### Attributes
+
+<ResponseField name="project" type="angr.Project">
+  The associated angr project
+</ResponseField>
+
+<ResponseField name="arch" type="archinfo.Arch">
+  The architecture being analyzed (derived from project.arch)
+</ResponseField>
+
+<ResponseField name="state" type="StateType">
+  The current state being executed
+</ResponseField>
+
+---
+
+## SimSuccessors
+
+Categorizes all result states from a SimEngine run.
+
+```python
+class SimSuccessors:
+    def __init__(self, addr: int | AILAddr | SootAddressDescriptor | None,
+                 initial_state: SimState | None)
+```
+
+<ParamField path="addr" type="int | AILAddr | SootAddressDescriptor">
+  The address at which execution is taking place
+</ParamField>
+
+<ParamField path="initial_state" type="SimState">
+  The initial state for which execution produced these successors
+</ParamField>
+
+### Attributes
+
+<ResponseField name="successors" type="list[SimState]">
+  The "normal" successors. IP may be symbolic, but must have reasonable number of solutions
+</ResponseField>
+
+<ResponseField name="flat_successors" type="list[SimState]">
+  Normal successors with symbolic IPs concretized. One state per possible IP value
+</ResponseField>
+
+<ResponseField name="unsat_successors" type="list[SimState]">
+  Successors that are unsatisfiable after guard condition is added
+</ResponseField>
+
+<ResponseField name="unconstrained_successors" type="list[SimState]">
+  States with too many possible IP solutions during flattening
+</ResponseField>
+
+<ResponseField name="all_successors" type="list[SimState]">
+  All successors (successors + unsat_successors)
+</ResponseField>
+
+<ResponseField name="engine" type="SimEngine">
+  The engine that produced these successors
+</ResponseField>
+
+<ResponseField name="processed" type="bool">
+  Whether processing succeeded
+</ResponseField>
+
+<ResponseField name="artifacts" type="dict">
+  Analysis byproducts (e.g., IRSB) produced during execution
+</ResponseField>
+
+### Methods
+
+#### add_successor
+
+Add a successor state to the appropriate list.
+
+```python
+def add_successor(self, state: SimState, target, guard, jumpkind: str,
+                   add_guard: bool = True, exit_stmt_idx=None,
+                   exit_ins_addr=None, source=None)
+```
+
+<ParamField path="state" type="SimState" required>
+  The successor state
+</ParamField>
+
+<ParamField path="target" type="BV | int">
+  The target address of the jump/call/ret
+</ParamField>
+
+<ParamField path="guard" type="BV">
+  The guard expression for this successor
+</ParamField>
+
+<ParamField path="jumpkind" type="str" required>
+  Type of jump: 'Ijk_Call', 'Ijk_Ret', 'Ijk_Boring', 'Ijk_Sys*', etc.
+</ParamField>
+
+<ParamField path="add_guard" type="bool" default="True">
+  Whether to add the guard constraint to the state
+</ParamField>
+
+<ParamField path="exit_stmt_idx" type="int">
+  The ID of the exit statement ('default' for default exit, None for non-statement exits)
+</ParamField>
+
+<ParamField path="exit_ins_addr" type="int">
+  The instruction pointer of this exit
+</ParamField>
+
+<ParamField path="source" type="int">
+  The source address of the jump (basic block address)
+</ParamField>
+
+---
+
+## SuccessorsEngine
+
+Mixin for engines that produce SimSuccessors objects.
+
+```python
+class SuccessorsEngine(SimEngine[HeavyState, SimSuccessors])
+```
+
+### Methods
+
+#### process
+
+Perform execution with a state.
+
+```python
+def process(self, state: SimState, inline: bool = False,
+            force_addr: int | None = None, **kwargs) -> SimSuccessors
+```
+
+<ParamField path="state" type="SimState" required>
+  The state to execute. Will be copied before modification unless inline=True
+</ParamField>
+
+<ParamField path="inline" type="bool" default="False">
+  Don't copy the state before execution
+</ParamField>
+
+<ParamField path="force_addr" type="int">
+  Force execution to pretend we're at this concrete address
+</ParamField>
+
+Returns a `SimSuccessors` object categorizing the execution's successor states.
+
+#### process_successors
+
+Override this method to fill out the SimSuccessors object.
+
+```python
+def process_successors(self, successors: SimSuccessors, **kwargs)
+```
+
+<ParamField path="successors" type="SimSuccessors" required>
+  The successors object to fill with results
+</ParamField>
+
+---
+
+## UberEngine
+
+The default execution engine for angr.
+
+```python
+class UberEngine(
+    SimEngineFailure,
+    SimEngineSyscall,
+    HooksMixin,
+    SimEngineUnicorn,
+    SuperFastpathMixin,
+    TrackActionsMixin,
+    SimInspectMixin,
+    HeavyResilienceMixin,
+    SootMixin,
+    AILMixin,
+    HeavyVEXMixin,
+)
+```
+
+Includes mixins for most common functionality:
+- **VEX IR execution** - Execute VEX intermediate representation
+- **Unicorn** - Concrete execution using Unicorn Engine
+- **Syscall handling** - Process system calls
+- **Hook support** - Execute user-defined hooks
+- **SimProcedure handling** - Execute symbolic procedure summaries
+- **Action tracking** - Record memory/register operations
+- **Inspection** - Breakpoint and instrumentation support
+
+For performance-sensitive applications, create a custom engine with only necessary mixins.
+
+---
+
+## HeavyVEXMixin
+
+Execution engine based on VEX (Valgrind's IR).
+
+```python
+class HeavyVEXMixin(SuccessorsEngine, ClaripyDataMixin,
+                    SimStateStorageMixin, VEXMixin, VEXLifter)
+```
+
+### Step Parameters
+
+Responds to the following keyword arguments in `step()`:
+
+<ParamField path="irsb" type="pyvex.IRSB">
+  PyVEX IRSB object to use for execution. If not provided, one will be lifted
+</ParamField>
+
+<ParamField path="skip_stmts" type="int">
+  Number of statements to skip in processing
+</ParamField>
+
+<ParamField path="last_stmt" type="int">
+  Do not execute any statements after this statement
+</ParamField>
+
+<ParamField path="whitelist" type="set[int]">
+  Only execute statements in this set
+</ParamField>
+
+<ParamField path="thumb" type="bool">
+  Force block to be lifted in ARM's THUMB mode
+</ParamField>
+
+<ParamField path="extra_stop_points" type="set[int]">
+  Additional addresses at which to break basic blocks
+</ParamField>
+
+<ParamField path="opt_level" type="int">
+  VEX optimization level (0-2)
+</ParamField>
+
+<ParamField path="insn_bytes" type="bytes">
+  Bytes to use for the block instead of reading from project
+</ParamField>
+
+<ParamField path="size" type="int">
+  Maximum size of the block in bytes
+</ParamField>
+
+<ParamField path="num_inst" type="int">
+  Maximum number of instructions to execute
+</ParamField>
+
+<ParamField path="traceflags" type="int" default="0">
+  VEX trace flags for debugging
+</ParamField>
+
+---
+
+## SimEngineSyscall
+
+Engine mixin for handling system calls.
+
+```python
+class SimEngineSyscall(SuccessorsEngine)
+```
+
+Automatically dispatches to the appropriate syscall SimProcedure based on the syscall number in the state.
+
+---
+
+## SimEngineUnicorn
+
+Engine for concrete execution using Unicorn Engine.
+
+```python
+class SimEngineUnicorn(SuccessorsEngine)
+```
+
+Provides fast concrete execution when state is fully concrete. Falls back to symbolic execution when symbolic values are encountered.
+
+<Accordion title="Example: Using Different Engines">
+```python
+import angr
+
+# Load binary
+project = angr.Project('/bin/ls', auto_load_libs=False)
+
+# Create initial state
+state = project.factory.entry_state()
+
+# Use default UberEngine (automatic)
+simgr = project.factory.simulation_manager(state)
+simgr.step()
+
+# Access successors
+for successor in simgr.active:
+    print(f"State at: {hex(successor.addr)}")
+
+# Use Unicorn for concrete execution
+state.options.add(angr.options.UNICORN)
+simgr2 = project.factory.simulation_manager(state)
+simgr2.run(until=lambda sm: len(sm.active) > 1)
+
+# Custom step with VEX parameters
+simgr.step(
+    num_inst=10,        # Execute max 10 instructions
+    opt_level=1,        # VEX optimization level
+)
+```
+</Accordion>
+
+<Accordion title="Example: Accessing Execution Artifacts">
+```python
+import angr
+
+project = angr.Project('/bin/example')
+state = project.factory.entry_state()
+
+# Get successors object
+successors = project.factory.successors(state)
+
+# Access IRSB artifact
+irsb = successors.artifacts['irsb']
+print(f"IRSB at {hex(irsb.addr)}")
+print(f"IRSB size: {successors.artifacts['irsb_size']} bytes")
+print(f"Instruction addresses: {[hex(a) for a in successors.artifacts['insn_addrs']]}")
+
+# Examine successors
+print(f"Normal successors: {len(successors.flat_successors)}")
+print(f"Unsat successors: {len(successors.unsat_successors)}")
+print(f"Unconstrained: {len(successors.unconstrained_successors)}")
+```
+</Accordion>
+
+---
+
+## Engine Composition
+
+Create custom engines by composing mixins:
+
+```python
+from angr.engines import (
+    SuccessorsEngine,
+    HeavyVEXMixin,
+    HooksMixin,
+    SimInspectMixin
+)
+
+# Minimal engine: VEX + hooks + inspection
+class MinimalEngine(
+    HooksMixin,
+    SimInspectMixin,
+    HeavyVEXMixin
+):
+    pass
+
+# Use custom engine
+project = angr.Project('/bin/ls')
+project.factory.default_engine = MinimalEngine
+```
+
+Mixins are resolved left-to-right using Python's MRO (Method Resolution Order).

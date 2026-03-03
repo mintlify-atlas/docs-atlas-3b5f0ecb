@@ -1,0 +1,436 @@
+---
+title: Function Identifier
+description: Identify common library functions in binary code
+---
+
+The `Identifier` analysis matches functions in a binary against a database of known library functions, helping to recognize standard library calls in stripped binaries.
+
+## Overview
+
+The Identifier analysis:
+- Matches functions against known library signatures
+- Identifies common libc functions (memcpy, malloc, strcmp, etc.)
+- Uses test-based matching with symbolic execution
+- Analyzes stack frame structure
+- **Currently optimized for CGC binaries**
+
+<Warning>
+The Identifier is currently designed for **CGC (Cyber Grand Challenge) binaries** and may produce unexpected results on other binary formats. Support for ELF and PE binaries is limited.
+</Warning>
+
+## Basic Usage
+
+```python
+import angr
+
+# Load a CGC binary
+p = angr.Project('challenge.cgc')
+
+# Run identifier (auto-generates CFG)
+identifier = p.analyses.Identifier()
+
+# Iterate over identified functions
+for addr, name in identifier.run():
+    print(f"Found {name} at {addr:#x}")
+
+# Access all matches
+for func, (name, func_obj) in identifier.matches.items():
+    print(f"Function at {func.addr:#x}: {name}")
+```
+
+## Configuration Options
+
+```python
+identifier = p.analyses.Identifier(
+    # Provide existing CFG (or None to generate)
+    cfg=cfg,
+    
+    # Require functions to have callers
+    require_predecessors=True,
+    
+    # Only try to identify specific functions
+    only_find={'memcpy', 'strcmp'},
+)
+
+# Run identification
+for addr, name in identifier.run(only_find={'malloc', 'free'}):
+    print(f"{name} at {addr:#x}")
+```
+
+## Identified Function Types
+
+The Identifier can recognize common library functions:
+
+<Tabs>
+  <Tab title="String Functions">
+    String manipulation functions:
+    
+    ```python
+    # Common string functions
+    string_funcs = [
+        'memcmp',   # Compare memory
+        'memcpy',   # Copy memory
+        'memmove',  # Move memory (overlap-safe)
+        'memset',   # Fill memory
+        'strcmp',   # Compare strings
+        'strcpy',   # Copy string
+        'strlen',   # String length
+        'strncmp',  # Compare n characters
+        'strcasecmp', # Case-insensitive compare
+    ]
+    
+    identifier = p.analyses.Identifier()
+    for addr, name in identifier.run(only_find=set(string_funcs)):
+        print(f"Found {name} at {addr:#x}")
+    ```
+  </Tab>
+  
+  <Tab title="Memory Functions">
+    Memory management functions:
+    
+    ```python
+    # Memory allocation functions
+    mem_funcs = ['malloc', 'free', 'calloc', 'realloc']
+    
+    identifier = p.analyses.Identifier()
+    for addr, name in identifier.run(only_find=set(mem_funcs)):
+        print(f"Found {name} at {addr:#x}")
+    ```
+  </Tab>
+  
+  <Tab title="I/O Functions">
+    Input/output functions:
+    
+    ```python
+    # I/O functions  
+    io_funcs = ['printf', 'sprintf', 'fprintf', 'fdprintf']
+    
+    identifier = p.analyses.Identifier()
+    for addr, name in identifier.run(only_find=set(io_funcs)):
+        print(f"Found {name} at {addr:#x}")
+    ```
+  </Tab>
+  
+  <Tab title="Other Functions">
+    Other utility functions:
+    
+    ```python
+    # Misc functions
+    other_funcs = ['strtol', 'atoi']
+    
+    identifier = p.analyses.Identifier()
+    for addr, name in identifier.run(only_find=set(other_funcs)):
+        print(f"Found {name} at {addr:#x}")
+    ```
+  </Tab>
+</Tabs>
+
+## Function Information
+
+The Identifier collects structural information about each function:
+
+```python
+identifier = p.analyses.Identifier()
+
+# Access function info for a specific function
+func = cfg.kb.functions[0x400100]
+
+if func in identifier.func_info:
+    info = identifier.func_info[func]
+    
+    print(f"Function at {func.addr:#x}:")
+    print(f"  Stack vars: {info.stack_vars}")
+    print(f"  Stack args: {info.stack_args}")
+    print(f"  Frame size: {info.frame_size}")
+    print(f"  Pushed regs: {info.pushed_regs}")
+    print(f"  BP-based: {info.bp_based}")
+    print(f"  Var args: {info.var_args}")
+```
+
+### FuncInfo Properties
+
+```python
+class FuncInfo:
+    stack_vars: list          # Stack variables
+    stack_var_accesses: dict  # Variable access patterns
+    frame_size: int          # Stack frame size
+    pushed_regs: list        # Saved registers
+    stack_args: list         # Arguments on stack
+    stack_arg_accesses: dict # Argument accesses
+    buffers: list            # Buffer variables
+    var_args: bool           # Has variable arguments
+    bp_based: bool           # Uses base pointer
+    bp_sp_diff: int         # BP-SP offset
+    accesses_ret: bool       # Accesses return address
+    preamble_sp_change: int  # Stack adjustment in preamble
+```
+
+## How Identification Works
+
+The Identifier uses a multi-stage matching process:
+
+<Steps>
+  <Step title="Structural Analysis">
+    Analyzes each function's structure:
+    - Stack frame layout
+    - Number of arguments
+    - Register usage patterns
+    - Function preamble/epilogue
+  </Step>
+  
+  <Step title="Pre-filtering">
+    Filters candidates by:
+    - Argument count
+    - Stack variable count
+    - Basic structural properties
+  </Step>
+  
+  <Step title="Test-based Matching">
+    Runs test cases symbolically:
+    - Executes function with symbolic inputs
+    - Compares behavior against known implementations
+    - Checks output values and side effects
+  </Step>
+  
+  <Step title="Verification">
+    Validates matches:
+    - Ensures consistency across tests
+    - Checks for special cases
+    - Verifies call graph relationships
+  </Step>
+</Steps>
+
+## Example: Identifying All Functions
+
+```python
+import angr
+from collections import defaultdict
+
+def identify_all_functions(binary_path):
+    """Identify all recognizable functions in a binary."""
+    
+    # Load binary
+    p = angr.Project(binary_path)
+    
+    # Run identifier
+    print("Running identifier analysis...")
+    identifier = p.analyses.Identifier()
+    
+    # Collect results by type
+    by_category = defaultdict(list)
+    
+    categories = {
+        'string': {'memcpy', 'memcmp', 'memmove', 'memset', 
+                   'strcmp', 'strcpy', 'strlen', 'strncmp'},
+        'memory': {'malloc', 'free', 'calloc', 'realloc'},
+        'io': {'printf', 'sprintf', 'fprintf'},
+        'conversion': {'strtol', 'atoi'},
+    }
+    
+    # Run identification
+    for addr, name in identifier.run():
+        # Categorize
+        category = 'other'
+        for cat, funcs in categories.items():
+            if name in funcs:
+                category = cat
+                break
+        
+        by_category[category].append((addr, name))
+    
+    # Print results
+    print("\n=== Identification Results ===")
+    for category in sorted(by_category.keys()):
+        print(f"\n{category.upper()}:")
+        for addr, name in sorted(by_category[category]):
+            print(f"  {addr:#x}: {name}")
+    
+    total = sum(len(v) for v in by_category.values())
+    print(f"\nTotal identified: {total} functions")
+    
+    return identifier
+
+# Usage
+identifier = identify_all_functions('challenge.cgc')
+```
+
+## Example: Analyzing Stack Frames
+
+```python
+def analyze_stack_frames(project):
+    """Analyze stack frame information for all functions."""
+    
+    identifier = project.analyses.Identifier()
+    
+    print("=== Stack Frame Analysis ===")
+    
+    for func, info in identifier.func_info.items():
+        if info is None:
+            continue
+        
+        print(f"\nFunction at {func.addr:#x}:")
+        
+        if func in identifier.matches:
+            name = identifier.matches[func][0]
+            print(f"  Name: {name}")
+        
+        print(f"  Frame size: {info.frame_size} bytes")
+        print(f"  Stack vars: {len(info.stack_vars) if info.stack_vars else 0}")
+        print(f"  Stack args: {len(info.stack_args) if info.stack_args else 0}")
+        print(f"  Saved regs: {info.pushed_regs}")
+        print(f"  BP-based: {info.bp_based}")
+
+# Usage
+p = angr.Project('challenge.cgc')
+analyze_stack_frames(p)
+```
+
+## Example: Finding Specific Functions
+
+```python
+def find_malloc_free(project):
+    """Find malloc and free implementations."""
+    
+    identifier = project.analyses.Identifier()
+    
+    # Only look for memory functions
+    results = {}
+    for addr, name in identifier.run(only_find={'malloc', 'free'}):
+        results[name] = addr
+    
+    if 'malloc' in results:
+        print(f"Found malloc at {results['malloc']:#x}")
+        
+        # Get the function
+        malloc_func = project.kb.functions[results['malloc']]
+        print(f"  Blocks: {len(malloc_func.block_addrs)}")
+        print(f"  Callers: {len(list(project.kb.functions.callgraph.predecessors(malloc_func.addr)))}")
+    
+    if 'free' in results:
+        print(f"Found free at {results['free']:#x}")
+    
+    return results
+
+# Usage
+p = angr.Project('challenge.cgc')
+find_malloc_free(p)
+```
+
+## Accessing Match Details
+
+```python
+identifier = p.analyses.Identifier()
+
+# Run identification
+list(identifier.run())
+
+# Access the matches dictionary
+for func, (name, func_obj) in identifier.matches.items():
+    print(f"\n{name} at {func.addr:#x}:")
+    print(f"  Function object: {func_obj}")
+    print(f"  Num args: {func_obj.num_args() if hasattr(func_obj, 'num_args') else 'unknown'}")
+    
+    # Get callers
+    callers = list(cfg.functions.callgraph.predecessors(func.addr))
+    print(f"  Called from {len(callers)} locations")
+```
+
+## Limitations
+
+<Warning>
+**Current Limitations**:
+
+1. **Binary Format**: Primarily designed for CGC binaries
+2. **Function Coverage**: Limited to common libc functions
+3. **Performance**: Can be slow for large binaries (100+ functions)
+4. **Accuracy**: May produce false positives/negatives
+5. **Optimization**: Heavily optimized code may not match
+</Warning>
+
+## Performance Considerations
+
+<Tip>
+**Performance Tips**:
+
+- Use `only_find` to limit search scope
+- Pre-generate CFG and reuse it
+- The analysis automatically skips if binary has 400+ functions
+- Consider running on specific functions of interest
+</Tip>
+
+```python
+# Check if binary is too large
+identifier = p.analyses.Identifier()
+if identifier._too_large():
+    print("Binary too large for identifier")
+else:
+    for addr, name in identifier.run():
+        print(f"{name} at {addr:#x}")
+```
+
+## Integration with Other Analyses
+
+### With CFG
+
+```python
+# Generate CFG first for better performance
+cfg = p.analyses.CFGFast()
+
+# Use it in identifier
+identifier = p.analyses.Identifier(cfg=cfg)
+for addr, name in identifier.run():
+    # Update function names in KB
+    func = cfg.kb.functions[addr]
+    func.name = name
+    print(f"Renamed function at {addr:#x} to {name}")
+```
+
+### With Decompiler
+
+```python
+# Identify functions first
+identifier = p.analyses.Identifier()
+for addr, name in identifier.run():
+    cfg.kb.functions[addr].name = name
+
+# Then decompile with better names
+func = cfg.kb.functions['memcpy']
+if func:
+    dec = p.analyses.Decompiler(func)
+    print(dec.codegen.text)
+```
+
+## Custom Function Matching
+
+While the built-in identifier is limited, you can extend it:
+
+```python
+from angr.analyses.identifier.functions import Function
+
+class MyCustomFunction(Function):
+    def __init__(self):
+        super().__init__()
+        self._name = 'my_function'
+    
+    def num_args(self):
+        return 2
+    
+    def get_name(self):
+        return self._name
+    
+    def try_match(self, func, identifier, runner):
+        # Custom matching logic
+        # Return True if matches, False otherwise
+        return False
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Variable Recovery" href="/analyses/variable-recovery">
+    Analyze function stack frames
+  </Card>
+  <Card title="CFG Analysis" href="/analyses/cfg">
+    Understand function call graphs
+  </Card>
+</CardGroup>

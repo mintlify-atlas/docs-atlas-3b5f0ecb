@@ -1,0 +1,385 @@
+---
+title: Memory Plugin
+description: API reference for angr's memory plugin that provides symbolic memory operations
+---
+
+The memory plugin provides symbolic memory operations for angr states. It's accessible via `state.memory` and provides methods for reading, writing, and manipulating memory.
+
+## Overview
+
+The memory plugin is implemented as a paged memory system that supports symbolic addresses and values. It's built using the `DefaultMemory` class which combines multiple mixins to provide a full-featured memory subsystem.
+
+## Accessing Memory
+
+Memory can be accessed directly through `state.memory` or through the convenient `state.mem` interface.
+
+```python
+# Direct access
+value = state.memory.load(0x1000, 8)
+state.memory.store(0x2000, value)
+
+# Convenient typed access
+value = state.mem[0x1000].long.resolved
+state.mem[0x2000].long = 0x41414141
+```
+
+## Core Methods
+
+### load
+
+```python
+load(addr, size=None, *, endness=None, **kwargs)
+```
+
+Load data from memory at the specified address.
+
+<ParamField path="addr" type="int | BV">
+  The address to load from. Can be a concrete integer or symbolic bitvector.
+</ParamField>
+
+<ParamField path="size" type="int">
+  The number of bytes to load.
+</ParamField>
+
+<ParamField path="endness" type="str" default="arch.memory_endness">
+  The endianness to use ('Iend_LE' or 'Iend_BE'). Defaults to the architecture's memory endness.
+</ParamField>
+
+<ParamField path="inspect" type="bool" default="true">
+  Whether to trigger SimInspect breakpoints for this operation.
+</ParamField>
+
+<ParamField path="disable_actions" type="bool" default="false">
+  Whether to disable creating SimActions for this operation.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  The loaded value as a claripy bitvector.
+</ResponseField>
+
+```python
+# Load 8 bytes from address 0x1000
+value = state.memory.load(0x1000, 8)
+
+# Load with little-endian byte order
+value = state.memory.load(0x2000, 4, endness='Iend_LE')
+
+# Load from symbolic address
+sym_addr = state.solver.BVS('addr', 64)
+value = state.memory.load(sym_addr, 8)
+```
+
+### store
+
+```python
+store(addr, data, size=None, *, endness=None, **kwargs)
+```
+
+Store data to memory at the specified address.
+
+<ParamField path="addr" type="int | BV">
+  The address to store to. Can be a concrete integer or symbolic bitvector.
+</ParamField>
+
+<ParamField path="data" type="BV | int | bytes">
+  The data to store. Can be a bitvector, integer, or bytes.
+</ParamField>
+
+<ParamField path="size" type="int">
+  The number of bytes to store. Required if data is not a bitvector.
+</ParamField>
+
+<ParamField path="endness" type="str" default="arch.memory_endness">
+  The endianness to use ('Iend_LE' or 'Iend_BE').
+</ParamField>
+
+```python
+# Store concrete value
+state.memory.store(0x1000, 0x4141414142424242, 8)
+
+# Store bitvector
+bv = state.solver.BVV(0x1234, 32)
+state.memory.store(0x2000, bv)
+
+# Store bytes
+state.memory.store(0x3000, b"AAAA", 4)
+```
+
+### find
+
+```python
+find(addr, what, max_search=None, max_symbolic_bytes=None, default=None, step=1, **kwargs)
+```
+
+Search memory for a specific byte pattern.
+
+<ParamField path="addr" type="int | BV">
+  The address to start searching from.
+</ParamField>
+
+<ParamField path="what" type="BV | int | bytes | str">
+  The pattern to search for.
+</ParamField>
+
+<ParamField path="max_search" type="int">
+  Maximum number of bytes to search.
+</ParamField>
+
+<ParamField path="max_symbolic_bytes" type="int" default="1">
+  Maximum number of symbolic bytes to allow in search.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  The address where the pattern was found, or the default value if not found.
+</ResponseField>
+
+```python
+# Find a string in memory
+addr = state.memory.find(0x1000, b"hello", max_search=0x1000)
+
+# Find with symbolic result
+found = state.memory.find(0x2000, b"\x00", max_search=256, default=-1)
+```
+
+### copy_contents
+
+```python
+copy_contents(dst, src, size, **kwargs)
+```
+
+Copy memory contents from one address to another.
+
+<ParamField path="dst" type="int | BV">
+  Destination address.
+</ParamField>
+
+<ParamField path="src" type="int | BV">
+  Source address.
+</ParamField>
+
+<ParamField path="size" type="int | BV">
+  Number of bytes to copy.
+</ParamField>
+
+```python
+# Copy 256 bytes
+state.memory.copy_contents(0x2000, 0x1000, 256)
+```
+
+## Memory Regions
+
+### map_region
+
+```python
+map_region(addr, length, permissions, init_zero=True)
+```
+
+Map a new memory region with specific permissions.
+
+<ParamField path="addr" type="int">
+  The starting address of the region.
+</ParamField>
+
+<ParamField path="length" type="int">
+  The length of the region in bytes.
+</ParamField>
+
+<ParamField path="permissions" type="int">
+  Permission flags (1=read, 2=write, 4=execute). Can be combined with bitwise OR.
+</ParamField>
+
+<ParamField path="init_zero" type="bool" default="true">
+  Whether to initialize the region with zeros.
+</ParamField>
+
+```python
+# Map readable and writable region
+state.memory.map_region(0x10000, 0x1000, 3)  # R+W
+
+# Map executable region
+state.memory.map_region(0x20000, 0x2000, 5)  # R+X
+```
+
+### unmap_region
+
+```python
+unmap_region(addr, length)
+```
+
+Unmap a previously mapped memory region.
+
+<ParamField path="addr" type="int">
+  The starting address of the region to unmap.
+</ParamField>
+
+<ParamField path="length" type="int">
+  The length of the region in bytes.
+</ParamField>
+
+### permissions
+
+```python
+permissions(addr, permissions=None, length=None)
+```
+
+Get or set permissions for a memory address.
+
+<ParamField path="addr" type="int">
+  The address to query or modify.
+</ParamField>
+
+<ParamField path="permissions" type="int" optional>
+  If provided, sets the permissions. If None, returns current permissions.
+</ParamField>
+
+<ParamField path="length" type="int" default="1">
+  The number of bytes affected.
+</ParamField>
+
+<ResponseField name="return" type="int | None">
+  Current permissions if querying, None if setting.
+</ResponseField>
+
+```python
+# Get permissions
+perms = state.memory.permissions(0x1000)
+
+# Set permissions to read-only
+state.memory.permissions(0x1000, 1, length=0x1000)
+```
+
+## Advanced Features
+
+### Concrete Store
+
+For performance-critical code, you can use concrete stores that bypass symbolic execution:
+
+```python
+# Store concrete bytes directly
+state.memory.store(0x1000, b"\x41\x42\x43\x44", disable_actions=True, inspect=False)
+```
+
+### Replace All
+
+```python
+replace_all(old, new)
+```
+
+Replace all occurrences of an AST in memory with another.
+
+<ParamField path="old" type="BV">
+  The AST to replace.
+</ParamField>
+
+<ParamField path="new" type="BV">
+  The AST to replace it with.
+</ParamField>
+
+```python
+# Replace all instances of a symbolic variable
+old_var = state.solver.BVS('old', 32)
+new_var = state.solver.BVS('new', 32)
+state.memory.replace_all(old_var, new_var)
+```
+
+### Memory Backing
+
+Memory can be initialized from various sources:
+
+```python
+# From CLE memory backer (project binary)
+state = project.factory.entry_state()
+
+# From dictionary
+memory_dict = {0x1000: b"AAAA", 0x2000: b"BBBB"}
+state = project.factory.blank_state(dict_memory_backer=memory_dict)
+```
+
+## Properties
+
+<ParamField path="id" type="str">
+  Unique identifier for this memory region (e.g., 'mem', 'reg').
+</ParamField>
+
+<ParamField path="endness" type="str">
+  Default endianness for memory operations.
+</ParamField>
+
+<ParamField path="state" type="SimState">
+  The state this memory belongs to.
+</ParamField>
+
+## Memory Types
+
+angr provides several memory implementations optimized for different use cases:
+
+<Accordion title="DefaultMemory">
+  Full-featured paged memory with support for symbolic addresses, permissions, and all memory operations. This is the standard memory type used in most analyses.
+</Accordion>
+
+<Accordion title="FastMemory">
+  Simplified memory implementation optimized for concrete execution. Lacks some features but provides better performance.
+</Accordion>
+
+<Accordion title="AbstractMemory">
+  Memory implementation for static analysis with abstract interpretation. Stores abstract values instead of concrete bitvectors.
+</Accordion>
+
+<Accordion title="RegionedMemory">
+  Memory divided into named regions (stack, heap, global, etc.) for better organization and analysis.
+</Accordion>
+
+## Examples
+
+### Reading and Writing Strings
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+state = project.factory.entry_state()
+
+# Write a null-terminated string
+state.memory.store(0x1000, b"Hello, World!\x00")
+
+# Read it back
+string_bv = state.memory.load(0x1000, 14)
+string = state.solver.eval(string_bv, cast_to=bytes)
+print(string)  # b'Hello, World!\x00'
+```
+
+### Working with Symbolic Memory
+
+```python
+# Create symbolic buffer
+sym_buffer = state.solver.BVS('input', 64 * 8)  # 64 bytes
+state.memory.store(0x2000, sym_buffer)
+
+# Read it back
+read_value = state.memory.load(0x2000, 64)
+
+# Constrain the buffer
+state.solver.add(read_value[0:8] == ord('A'))
+state.solver.add(read_value[8:16] == ord('B'))
+
+# Solve for the buffer
+solution = state.solver.eval(read_value, cast_to=bytes)
+print(solution[:2])  # b'AB'
+```
+
+### Memory Search
+
+```python
+# Load data into memory
+state.memory.store(0x1000, b"The quick brown fox jumps")
+
+# Search for a substring
+fox_addr = state.memory.find(0x1000, b"fox", max_search=100)
+print(hex(state.solver.eval(fox_addr)))  # 0x1010
+```
+
+## See Also
+
+- [SimMemView](/api/state-plugins/memory#simmemview) - Convenient typed memory interface
+- [Registers Plugin](/api/state-plugins/registers) - Register file access
+- [Solver Plugin](/api/state-plugins/solver) - Constraint solving

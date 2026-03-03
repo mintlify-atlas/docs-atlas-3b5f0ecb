@@ -1,0 +1,453 @@
+---
+title: SimState - Program State
+description: Understanding and working with program states in angr
+---
+
+A `SimState` represents the state of a program at a specific point in time, including memory, registers, file system data, and any other "live data" that can be changed by execution.
+
+## Creating States
+
+The Project factory provides several constructors for creating states:
+
+### Entry State
+
+Create a state ready to execute at the program's entry point:
+
+```python
+import angr
+
+proj = angr.Project('/bin/true')
+state = proj.factory.entry_state()
+# <SimState @ 0x401670>
+```
+
+### Other State Constructors
+
+<Tabs>
+  <Tab title="Blank State">
+    ```python
+    # Create a "blank slate" with most data uninitialized
+    state = proj.factory.blank_state()
+    # Accessing uninitialized data returns unconstrained symbolic values
+    ```
+  </Tab>
+  
+  <Tab title="Full Init State">
+    ```python
+    # State ready to execute through initializers (shared library constructors)
+    state = proj.factory.full_init_state()
+    # Will execute initialization code before jumping to entry point
+    ```
+  </Tab>
+  
+  <Tab title="Call State">
+    ```python
+    # State ready to execute a specific function
+    state = proj.factory.call_state(
+        0x400710,  # function address
+        arg1,      # first argument
+        arg2       # second argument  
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Constructor Options
+
+All state constructors accept these common options:
+
+<ParamField path="addr" type="int">
+  Specific address to start execution (overrides default)
+</ParamField>
+
+<ParamField path="args" type="list[str | bytes]">
+  Command line arguments for the program (for entry_state/full_init_state)
+  ```python
+  state = proj.factory.entry_state(args=['./program', 'arg1', 'arg2'])
+  ```
+</ParamField>
+
+<ParamField path="env" type="dict[str, str]">
+  Environment variables
+  ```python
+  state = proj.factory.entry_state(env={'PATH': '/usr/bin'})
+  ```
+</ParamField>
+
+<ParamField path="add_options" type="set[str]">
+  State options to enable (see State Options below)
+</ParamField>
+
+<ParamField path="remove_options" type="set[str]">
+  State options to disable
+</ParamField>
+
+## Accessing Registers
+
+Use `state.regs` to access registers by name:
+
+```python
+# Read registers
+state.regs.rip
+# <BV64 0x401670>
+
+state.regs.rax  
+# <BV64 0x1c>
+
+# Write registers
+state.regs.rsi = 3
+state.regs.rdi = claripy.BVV(0x1000, 64)
+
+# Copy between registers
+state.regs.rbp = state.regs.rsp
+```
+
+<Note>
+Registers contain bitvectors, not Python integers. Use `state.solver.eval()` to convert to Python ints, or assign Python ints directly (they'll be converted automatically).
+</Note>
+
+## Accessing Memory
+
+The `state.mem` interface provides typed memory access:
+
+```python
+# Read memory as specific types
+state.mem[0x1000].uint32_t.resolved
+# <BV32 0x41424344>
+
+state.mem[0x1000].long.resolved
+state.mem[0x1000].char.resolved
+
+# Write memory
+state.mem[0x1000].uint64_t = state.regs.rdx
+state.mem[0x2000].int = 42
+
+# Dereference a pointer
+state.regs.rbp = state.mem[state.regs.rbp].uint64_t.resolved
+
+# Pointer arithmetic: add rax, qword ptr [rsp + 8]
+state.regs.rax += state.mem[state.regs.rsp + 8].uint64_t.resolved
+```
+
+### Memory Interface Pattern
+
+The `state.mem` interface uses this pattern:
+
+<Steps>
+
+<Step title="Specify address with array notation">
+  ```python
+  state.mem[0x1000]  # or state.mem[state.regs.rax]
+  ```
+</Step>
+
+<Step title="Specify type with attribute access">
+  ```python
+  state.mem[0x1000].uint32_t  # or .long, .char, etc.
+  ```
+</Step>
+
+<Step title="Access value">
+  ```python
+  # Get as bitvector
+  state.mem[0x1000].uint32_t.resolved
+  
+  # Get as Python int
+  state.mem[0x1000].uint32_t.concrete
+  
+  # Or just assign directly
+  state.mem[0x1000].uint32_t = 0x41414141
+  ```
+</Step>
+
+</Steps>
+
+### Low-Level Memory Access
+
+For raw memory operations, use `state.memory`:
+
+```python
+import archinfo
+
+# Load bytes (big-endian by default)
+data = state.memory.load(0x4000, 6)  # load 6 bytes
+# <BV48 0x89abcdef0123>
+
+# Store bytes
+state.memory.store(0x4000, claripy.BVV(0x0123456789abcdef, 64))
+
+# Little-endian access
+data = state.memory.load(0x4000, 4, endness=archinfo.Endness.LE)
+# <BV32 0x67452301>
+```
+
+<ParamField path="addr" type="int | BV">
+  Address to load from / store to
+</ParamField>
+
+<ParamField path="size" type="int">
+  Number of bytes (for load)
+</ParamField>
+
+<ParamField path="data" type="BV">
+  Bitvector to store (for store)
+</ParamField>
+
+<ParamField path="endness" type="archinfo.Endness">
+  Endianness for the operation (LE or BE)
+</ParamField>
+
+## Symbolic Values
+
+Uninitialized or symbolic data appears as named variables:
+
+```python
+state = proj.factory.entry_state()
+state.regs.rdi
+# <BV64 reg_48_11_64{UNINITIALIZED}>
+```
+
+This is a **symbolic variable** - the foundation of symbolic execution. See [Symbolic Execution](/core-concepts/symbolic-execution) for details.
+
+## Execution
+
+Perform one step of symbolic execution:
+
+```python
+state = proj.factory.entry_state()
+succ = state.step()
+
+# Access successor states
+succ.successors  # Normal successor states
+succ.unsat_successors  # Unsatisfiable successors
+succ.unconstrained_successors  # Unconstrained IP states
+```
+
+<Note>
+Symbolic execution can produce multiple successor states when a branch condition is symbolic. See [Symbolic Execution](/core-concepts/symbolic-execution) for more details.
+</Note>
+
+Get the basic block at the current instruction pointer:
+
+```python
+block = state.block()
+block.pp()  # pretty-print disassembly
+```
+
+## State Options
+
+State options control angr's execution engine behavior. Access via `state.options`:
+
+```python
+import angr
+
+# Enable an option
+state.options.add(angr.options.LAZY_SOLVES)
+
+# Disable an option  
+state.options.remove(angr.options.SYMBOLIC_TEMPS)
+
+# Create state with options
+state = proj.factory.entry_state(
+    add_options={angr.options.LAZY_SOLVES},
+    remove_options=angr.options.simplification
+)
+```
+
+### Common Options
+
+<ParamField path="LAZY_SOLVES">
+  Check state satisfiability as infrequently as possible (faster but may explore unsat states)
+</ParamField>
+
+<ParamField path="SYMBOLIC">
+  Enable symbolic execution (in angr.options.symbolic)
+</ParamField>
+
+<ParamField path="ABSTRACT_MEMORY">
+  Use abstract memory plugin instead of flat memory
+</ParamField>
+
+<ParamField path="ZERO_FILL_UNCONSTRAINED_MEMORY">
+  Fill uninitialized memory with zeros instead of symbolic values
+</ParamField>
+
+See the appendix for a complete list of options.
+
+## State Plugins
+
+Almost everything in a SimState is stored in plugins. Common plugins:
+
+### Solver Plugin
+
+Manages symbolic variables and constraints:
+
+```python
+# Add constraints
+state.solver.add(x > 10)
+state.solver.add(x < 20)
+
+# Evaluate symbolic expressions
+state.solver.eval(x)  # Get one solution
+state.solver.eval_one(x)  # Get unique solution (error if multiple)
+state.solver.min(x)  # Get minimum value
+state.solver.max(x)  # Get maximum value
+
+# Check satisfiability
+state.solver.satisfiable()  # Can constraints be satisfied?
+```
+
+See [Constraint Solving](/core-concepts/solver) for details.
+
+### History Plugin
+
+Stores execution history:
+
+```python
+# Iterate over executed basic block addresses
+for addr in state.history.bbl_addrs:
+    print(hex(addr))
+
+# Recent events
+state.history.recent_bbl_addrs  # BBs in most recent step
+state.history.descriptions  # Textual descriptions
+state.history.jump_guards  # Branch conditions encountered
+```
+
+### Callstack Plugin
+
+Tracks the call stack:
+
+```python
+# Access current frame
+state.callstack.func_addr      # Current function address
+state.callstack.call_site_addr # Where current function was called from
+state.callstack.stack_ptr      # Stack pointer at function entry
+state.callstack.ret_addr       # Return address
+
+# Iterate over all frames (most recent first)
+for frame in state.callstack:
+    print(f"Function at {frame.func_addr:#x}")
+```
+
+### POSIX Plugin
+
+File system and input/output:
+
+```python
+# Access stdin/stdout/stderr
+state.posix.stdin
+state.posix.stdout  
+state.posix.stderr
+
+# Read from stdin
+input_data = state.posix.stdin.load(0, state.posix.stdin.size)
+
+# File descriptors
+state.posix.fd  # Dictionary of open file descriptors
+```
+
+### Globals Plugin
+
+Store arbitrary data on the state:
+
+```python
+# Act like a dictionary
+state.globals['my_data'] = 42
+state.globals['flag_found'] = True
+
+if state.globals.get('visited_function'):
+    # ...
+```
+
+### Inspect Plugin
+
+Set breakpoints and inspect execution. See [Simulation and Instrumentation](/core-concepts/simulation).
+
+## Copying and Merging
+
+### Copying States
+
+States support fast copying:
+
+```python
+state1 = state.copy()
+state2 = state.copy()
+
+state1.mem[0x1000].uint32_t = 0x41414141  
+state2.mem[0x1000].uint32_t = 0x42424242
+
+# Original state unchanged
+state.mem[0x1000].uint32_t.concrete  
+```
+
+<Note>
+Angr treats states as immutable during execution. When you step a state, the original is unchanged and new successor states are created.
+</Note>
+
+### Merging States
+
+Merge states that explored different paths:
+
+```python
+# Merge returns (merged_state, merge_flag, anything_merged)
+merged, m, merged_occurred = state1.merge(state2)
+
+# The merged state contains symbolic values that can be either value
+value = merged.mem[0x1000].uint32_t
+# Can resolve to 0x41414141 OR 0x42424242
+```
+
+## Stack Operations
+
+Helper methods for stack manipulation:
+
+```python
+# Push value onto stack
+state.stack_push(0x1234)
+
+# Pop value from stack  
+value = state.stack_pop()
+
+# Read from stack at offset (without modifying SP)
+value = state.stack_read(offset=8, length=8)  # 8 bytes at sp+8
+value = state.stack_read(offset=-8, length=8, bp=True)  # From BP instead
+```
+
+## Example: Tracking Execution
+
+```python
+import angr
+
+proj = angr.Project('./binary')
+
+# Create state with custom options
+state = proj.factory.entry_state(
+    args=['./binary', 'input'],
+    add_options={angr.options.TRACK_ACTION_HISTORY}
+)
+
+# Execute several steps
+for _ in range(10):
+    succ = state.step()
+    if len(succ.successors) == 0:
+        break
+    state = succ.successors[0]
+
+# Examine execution history
+print("Executed blocks:")
+for addr in state.history.bbl_addrs:
+    print(f"  {addr:#x}")
+
+# Check current state
+print(f"Current IP: {state.addr:#x}")
+print(f"RAX: {state.solver.eval(state.regs.rax):#x}")
+print(f"Satisfiable: {state.satisfiable()}")
+```
+
+## See Also
+
+- [angr.Project](/core-concepts/projects)
+- [Symbolic Execution](/core-concepts/symbolic-execution)
+- [Constraint Solving](/core-concepts/solver)
+- [SimulationManager](/core-concepts/simulation)

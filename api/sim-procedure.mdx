@@ -1,0 +1,618 @@
+---
+title: SimProcedure API
+description: Create symbolic summaries of functions in angr
+---
+
+SimProcedure is a powerful abstraction for creating symbolic function summaries. Instead of executing actual binary code, you can replace functions with Python implementations that manipulate the state symbolically.
+
+Detailed documentation: https://docs.angr.io/extending-angr/simprocedures
+
+## SimProcedure
+
+Base class for all symbolic procedures.
+
+```python
+class SimProcedure:
+    def __init__(self,
+                 project: angr.Project | None = None,
+                 cc: angr.SimCC | None = None,
+                 prototype: str | SimTypeFunction | None = None,
+                 symbolic_return=None,
+                 returns=None,
+                 is_syscall: bool = False,
+                 is_stub: bool = False,
+                 num_args: int | None = None,
+                 display_name: str | None = None,
+                 library_name: str | None = None,
+                 is_function: bool | None = None,
+                 **kwargs)
+```
+
+<ParamField path="project" type="angr.Project">
+  The angr project this procedure belongs to
+</ParamField>
+
+<ParamField path="cc" type="SimCC">
+  Calling convention to use for argument extraction and return value handling
+</ParamField>
+
+<ParamField path="prototype" type="str | SimTypeFunction">
+  Function signature. Can be C-style string (e.g., "int printf(char *fmt, ...)") or SimTypeFunction
+</ParamField>
+
+<ParamField path="symbolic_return" type="bool">
+  Whether return value should be stubbed as unconstrained symbolic variable
+</ParamField>
+
+<ParamField path="returns" type="bool">
+  Whether this procedure returns to its caller
+</ParamField>
+
+<ParamField path="is_syscall" type="bool" default="False">
+  Whether this procedure is a system call
+</ParamField>
+
+<ParamField path="is_stub" type="bool" default="False">
+  Whether this is a stub (placeholder implementation)
+</ParamField>
+
+<ParamField path="num_args" type="int">
+  Number of arguments. Auto-detected from run() signature if not provided
+</ParamField>
+
+<ParamField path="display_name" type="str">
+  Name for display purposes. Defaults to class name
+</ParamField>
+
+<ParamField path="library_name" type="str">
+  Name of library this function comes from
+</ParamField>
+
+<ParamField path="is_function" type="bool">
+  Whether this emulates a function (vs inline code)
+</ParamField>
+
+### Class Variables
+
+Set these when implementing a SimProcedure:
+
+<ResponseField name="NO_RET" type="bool" default="False">
+  True if control flow never returns from this function
+</ResponseField>
+
+<ResponseField name="DYNAMIC_RET" type="bool" default="False">
+  True if return behavior depends on context. Must implement `dynamic_returns()` method
+</ResponseField>
+
+<ResponseField name="ADDS_EXITS" type="bool" default="False">
+  True if you perform control flow other than returning
+</ResponseField>
+
+<ResponseField name="IS_FUNCTION" type="bool" default="True">
+  Whether this simulates a function
+</ResponseField>
+
+<ResponseField name="ARGS_MISMATCH" type="bool" default="False">
+  True if you manually extract arguments differently than the prototype
+</ResponseField>
+
+<ResponseField name="local_vars" type="tuple[str, ...]" default="()">
+  Names of local variables to preserve across `self.call()` continuations
+</ResponseField>
+
+### Instance Attributes
+
+Available during execution:
+
+<ResponseField name="state" type="SimState">
+  The state being mutated by this procedure
+</ResponseField>
+
+<ResponseField name="project" type="angr.Project">
+  The associated angr project
+</ResponseField>
+
+<ResponseField name="arch" type="archinfo.Arch">
+  The architecture
+</ResponseField>
+
+<ResponseField name="addr" type="int">
+  Address at which procedure is executing
+</ResponseField>
+
+<ResponseField name="cc" type="SimCC">
+  Calling convention in use
+</ResponseField>
+
+<ResponseField name="arguments" type="list">
+  Function arguments extracted from state
+</ResponseField>
+
+<ResponseField name="arg_session" type="ArgSession | int">
+  Session for extracting variadic arguments
+</ResponseField>
+
+<ResponseField name="successors" type="SimSuccessors">
+  Successors object for this execution (None for inline calls)
+</ResponseField>
+
+<ResponseField name="ret_expr" type="BV">
+  Computed return value
+</ResponseField>
+
+---
+
+## Core Methods
+
+### run
+
+Implement this to define procedure behavior.
+
+```python
+def run(self, *args, **kwargs) -> Any
+```
+
+Receives arguments extracted from the state based on calling convention and prototype. Return value is automatically handled unless you explicitly call `self.ret()`.
+
+<Accordion title="Example: Simple SimProcedure">
+```python
+import angr
+from angr import SimProcedure
+import claripy
+
+class MyStrlen(SimProcedure):
+    def run(self, s):
+        # s is automatically extracted based on calling convention
+        # Find null terminator
+        length = claripy.BVV(0, self.state.arch.bits)
+        
+        idx = 0
+        while True:
+            char = self.state.memory.load(s + idx, 1)
+            if self.state.solver.is_true(char == 0):
+                break
+            idx += 1
+            if idx > 1000:  # prevent infinite loops
+                break
+        
+        return claripy.BVV(idx, self.state.arch.bits)
+
+# Hook strlen
+project.hook_symbol('strlen', MyStrlen())
+```
+</Accordion>
+
+### execute
+
+Execute the procedure on a state.
+
+```python
+def execute(self, state: SimState,
+            successors: SimSuccessors | None = None,
+            arguments: list | None = None,
+            ret_to: int | None = None) -> SimProcedure
+```
+
+<ParamField path="state" type="SimState" required>
+  State to execute on
+</ParamField>
+
+<ParamField path="successors" type="SimSuccessors">
+  Successors object to populate. None for inline calls
+</ParamField>
+
+<ParamField path="arguments" type="list">
+  Manually provided arguments (for inline calls)
+</ParamField>
+
+<ParamField path="ret_to" type="int">
+  Override return address
+</ParamField>
+
+Returns the executed instance with `ret_expr` set.
+
+---
+
+## Control Flow Methods
+
+### ret
+
+Return from the function.
+
+```python
+def ret(self, expr=None)
+```
+
+<ParamField path="expr" type="BV | int">
+  Return value to set. If not provided, returns void
+</ParamField>
+
+Adds an exit representing a return. Sets return value according to calling convention and jumps to return address.
+
+<Accordion title="Example: Return Values">
+```python
+class MyMalloc(SimProcedure):
+    def run(self, size):
+        # Allocate memory
+        addr = self.state.heap.allocate(size)
+        
+        # Return pointer
+        self.ret(addr)
+```
+</Accordion>
+
+### call
+
+Call another function via pointer.
+
+```python
+def call(self, addr, args: list, continue_at: str,
+         cc: SimCC | None = None,
+         prototype: SimTypeFunction | None = None,
+         jumpkind: str = "Ijk_Call")
+```
+
+<ParamField path="addr" type="int | BV" required>
+  Address of function to call
+</ParamField>
+
+<ParamField path="args" type="list" required>
+  Arguments to pass to the function
+</ParamField>
+
+<ParamField path="continue_at" type="str" required>
+  Name of method to continue in when call returns
+</ParamField>
+
+<ParamField path="cc" type="SimCC">
+  Calling convention for this call (default: use current cc)
+</ParamField>
+
+<ParamField path="prototype" type="SimTypeFunction">
+  Function prototype for the call
+</ParamField>
+
+<ParamField path="jumpkind" type="str" default="Ijk_Call">
+  Jump kind for this call
+</ParamField>
+
+Use `local_vars` class variable to preserve local state across the call.
+
+<Accordion title="Example: Call Continuation">
+```python
+class ComplexProcedure(SimProcedure):
+    local_vars = ('buf_addr', 'size')
+    
+    def run(self):
+        # Store local variables
+        self.buf_addr = self.state.heap.allocate(100)
+        self.size = 100
+        
+        # Call memset
+        memset_addr = self.project.loader.find_symbol('memset').rebased_addr
+        self.call(
+            memset_addr,
+            [self.buf_addr, 0, self.size],
+            continue_at='after_memset'
+        )
+    
+    def after_memset(self):
+        # Local variables restored automatically
+        # self.call_ret_expr contains memset return value
+        
+        # Do something with initialized buffer
+        self.state.memory.store(self.buf_addr, b"initialized")
+        self.ret(self.buf_addr)
+```
+</Accordion>
+
+### jump
+
+Jump to an address.
+
+```python
+def jump(self, addr, jumpkind: str = "Ijk_Boring")
+```
+
+<ParamField path="addr" type="int | BV" required>
+  Address to jump to
+</ParamField>
+
+<ParamField path="jumpkind" type="str" default="Ijk_Boring">
+  Type of jump
+</ParamField>
+
+### exit
+
+Terminate the program.
+
+```python
+def exit(self, exit_code: int | BV)
+```
+
+<ParamField path="exit_code" type="int | BV" required>
+  Exit code for the program
+</ParamField>
+
+### inline_call
+
+Call another SimProcedure inline to get its return value.
+
+```python
+def inline_call(self, procedure: type[SimProcedure],
+                *arguments, **kwargs) -> SimProcedure
+```
+
+<ParamField path="procedure" type="type[SimProcedure]" required>
+  SimProcedure class to execute
+</ParamField>
+
+<ParamField path="arguments" type="Any">
+  Positional arguments for the procedure
+</ParamField>
+
+<ParamField path="kwargs" type="dict">
+  Keyword arguments passed to procedure constructor as sim_kwargs
+</ParamField>
+
+Returns the executed procedure instance with `ret_expr` set.
+
+<Accordion title="Example: Inline Call">
+```python
+class WrapperFunction(SimProcedure):
+    def run(self, s):
+        # Call strlen inline
+        strlen_result = self.inline_call(
+            MyStrlen,
+            s
+        )
+        
+        length = strlen_result.ret_expr
+        
+        # Use the length
+        if self.state.solver.eval(length) > 100:
+            self.ret(1)  # String too long
+        else:
+            self.ret(0)  # OK
+```
+</Accordion>
+
+---
+
+## Argument Handling
+
+### va_arg
+
+Extract a variadic argument.
+
+```python
+def va_arg(self, ty: str | SimType, index: int | None = None) -> BV
+```
+
+<ParamField path="ty" type="str | SimType" required>
+  Type of the argument (e.g., "int", "char*")
+</ParamField>
+
+<ParamField path="index" type="int">
+  Specific index to extract. If None, extracts next variadic arg
+</ParamField>
+
+Use for functions with variable arguments like `printf`.
+
+<Accordion title="Example: Variadic Arguments">
+```python
+class MyPrintf(SimProcedure):
+    def run(self, fmt):
+        # fmt is the first argument
+        # Additional arguments are variadic
+        
+        # Read format string
+        fmt_str = self.state.mem[fmt].string.concrete
+        
+        # Count %d specifiers
+        num_ints = fmt_str.count(b'%d')
+        
+        # Extract variadic arguments
+        args = []
+        for i in range(num_ints):
+            arg = self.va_arg('int')
+            args.append(arg)
+        
+        # Format and write to stdout
+        # (simplified - real implementation more complex)
+        output = fmt_str % tuple(args)
+        self.state.posix.write(1, output, len(output))
+        
+        self.ret(len(output))
+```
+</Accordion>
+
+### set_args
+
+Set function arguments in the state.
+
+```python
+def set_args(self, args: list)
+```
+
+<ParamField path="args" type="list" required>
+  List of argument values to set according to calling convention
+</ParamField>
+
+---
+
+## Advanced Methods
+
+### static_exits
+
+Get exits via static analysis (fast CFG construction).
+
+```python
+def static_exits(self, blocks: list, **kwargs) -> list[dict]
+```
+
+<ParamField path="blocks" type="list" required>
+  Blocks executed before reaching this procedure
+</ParamField>
+
+Returns list of dicts with 'address', 'jumpkind', and 'namehint' keys.
+
+Override if `ADDS_EXITS = True`.
+
+### dynamic_returns
+
+Determine if function returns via static analysis.
+
+```python
+def dynamic_returns(self, blocks: list, **kwargs) -> bool
+```
+
+<ParamField path="blocks" type="list" required>
+  Blocks executed before reaching this procedure
+</ParamField>
+
+Returns True if call returns, False otherwise.
+
+Override if `DYNAMIC_RET = True`.
+
+---
+
+## Hooking Functions
+
+### Hook by Address
+
+```python
+project.hook(0x400400, MyProcedure())
+```
+
+### Hook by Symbol
+
+```python
+project.hook_symbol('malloc', MyMalloc())
+```
+
+### Hook with Length
+
+```python
+# Hook and skip 5 bytes of instructions
+project.hook(0x400400, MyProcedure(), length=5)
+```
+
+---
+
+## Complete Examples
+
+<Accordion title="Example: Custom malloc">
+```python
+import angr
+import claripy
+
+class MyMalloc(angr.SimProcedure):
+    def run(self, size):
+        # Get allocation size
+        size_int = self.state.solver.eval(size)
+        
+        # Allocate from heap
+        addr = self.state.heap.allocate(size_int)
+        
+        # Mark memory as allocated
+        self.state.memory.store(addr, claripy.BVV(0, size_int * 8))
+        
+        # Return pointer
+        return addr
+
+class MyFree(angr.SimProcedure):
+    def run(self, ptr):
+        # angr doesn't really need free for symbolic execution
+        # Just mark the memory as freed if you want
+        pass
+
+project = angr.Project('/bin/example')
+project.hook_symbol('malloc', MyMalloc())
+project.hook_symbol('free', MyFree())
+```
+</Accordion>
+
+<Accordion title="Example: System Call">
+```python
+class MyWrite(angr.SimProcedure):
+    NO_RET = False
+    
+    def run(self, fd, buf, count):
+        # Read data from buffer
+        data = self.state.memory.load(buf, count)
+        
+        # Write to file descriptor
+        written = self.state.posix.write(fd, data, count)
+        
+        # Return bytes written
+        return written
+
+# Hook write syscall
+project.simos.syscall_library.add('write', MyWrite, number=1)
+```
+</Accordion>
+
+<Accordion title="Example: Stub with Symbolic Return">
+```python
+class UnknownFunction(angr.SimProcedure):
+    def run(self, arg1, arg2):
+        # Create symbolic return value
+        ret_val = self.state.solver.BVS(
+            'unknown_func_ret',
+            self.arch.bits
+        )
+        
+        # Add constraints if known
+        # For example, assume non-negative
+        self.state.add_constraints(ret_val >= 0)
+        
+        return ret_val
+
+project.hook_symbol('unknown_function', UnknownFunction())
+```
+</Accordion>
+
+<Accordion title="Example: No Return Function">
+```python
+class MyExit(angr.SimProcedure):
+    NO_RET = True  # This function never returns
+    
+    def run(self, code):
+        # Terminate execution
+        self.exit(code)
+
+project.hook_symbol('exit', MyExit())
+```
+</Accordion>
+
+---
+
+## Inspection Hooks
+
+SimProcedures support breakpoint inspection:
+
+```python
+def inspect_simprocedure(state):
+    procedure = state.inspect.simprocedure
+    print(f"Executing: {procedure.display_name}")
+    print(f"Arguments: {procedure.arguments}")
+
+state.inspect.b(
+    'simprocedure',
+    when=angr.BP_BEFORE,
+    action=inspect_simprocedure
+)
+```
+
+---
+
+## Best Practices
+
+1. **Use prototypes**: Provide accurate prototypes for automatic argument extraction
+2. **Handle symbolic values**: Always consider that arguments may be symbolic
+3. **Add constraints**: When stubbing unknown functions, add reasonable constraints
+4. **Limit loops**: Add iteration limits to prevent infinite loops in symbolic execution
+5. **Use inline_call**: For composing procedures, use `inline_call()` instead of direct execution
+6. **Preserve state**: Use `local_vars` when using `self.call()` continuations
+7. **Check satisfiability**: Use `state.satisfiable()` before assuming constraints hold

@@ -1,0 +1,622 @@
+---
+title: Binary Patching and Modification
+description: Modify compiled binaries with angr's reassembler, patch vulnerabilities, and optimize code at the binary level
+---
+
+angr provides powerful capabilities for binary modification through its reassembler and binary optimizer analyses. This guide shows you how to patch binaries, fix vulnerabilities, and apply optimizations.
+
+## Overview
+
+Binary patching with angr enables:
+- Security patch injection without source code
+- Vulnerability mitigation
+- Performance optimization
+- Functionality modification
+- Instrumentation and hooking
+- Binary hardening
+
+## Reassembler Basics
+
+The Reassembler analysis converts binaries to assembly, allowing modification and reassembly.
+
+### Basic Reassembly Workflow
+
+<Steps>
+  <Step title="Load and analyze the binary">
+    ```python
+    import angr
+    
+    # Load the target binary
+    project = angr.Project("./target_binary", auto_load_libs=False)
+    
+    # Generate CFG for reassembler
+    cfg = project.analyses.CFGFast()
+    ```
+  </Step>
+  
+  <Step title="Create reassembler instance">
+    ```python
+    # Initialize the reassembler
+    reassembler = project.analyses.Reassembler(
+        cfg=cfg,
+        syntax='intel'  # or 'at&t'
+    )
+    ```
+  </Step>
+  
+  <Step title="Get assembly output">
+    ```python
+    # Get the reassembled code
+    assembly_code = reassembler.assembly
+    
+    # Save to file
+    with open('output.s', 'w') as f:
+        f.write(assembly_code)
+    ```
+  </Step>
+  
+  <Step title="Reassemble with external tools">
+    ```bash
+    # Compile the modified assembly
+    as -o output.o output.s
+    ld -o patched_binary output.o
+    ```
+  </Step>
+</Steps>
+
+## Patching Techniques
+
+### Removing Vulnerable Instructions
+
+Remove dangerous function calls or instructions:
+
+```python
+import angr
+
+project = angr.Project("./vulnerable_binary", auto_load_libs=False)
+cfg = project.analyses.CFGFast()
+reassembler = project.analyses.Reassembler(cfg=cfg)
+
+# Find and remove strcpy calls
+strcpy_addr = 0x401234  # Address of strcpy call
+
+# Mark instruction for removal
+reassembler.remove_instruction(strcpy_addr)
+
+# Generate modified assembly
+modified_asm = reassembler.assembly
+
+with open('patched.s', 'w') as f:
+    f.write(modified_asm)
+```
+
+<Warning>
+Removing instructions can break the binary. Always insert equivalent safe code or adjust control flow.
+</Warning>
+
+### Inserting Security Checks
+
+Add bounds checking before dangerous operations:
+
+```python
+import angr
+
+project = angr.Project("./binary", auto_load_libs=False)
+cfg = project.analyses.CFGFast()
+reassembler = project.analyses.Reassembler(cfg=cfg)
+
+# Insert bounds check before buffer copy
+buffer_copy_addr = 0x401234
+
+# Assembly code for bounds check (Intel syntax example)
+bounds_check = """
+    # Save registers
+    push rax
+    push rcx
+    
+    # Check if size > MAX_SIZE
+    mov rax, rsi          # size argument
+    cmp rax, 256          # MAX_SIZE = 256
+    jle .safe_copy
+    
+    # Size too large - abort
+    mov rax, 60           # sys_exit
+    mov rdi, 1            # exit code
+    syscall
+    
+.safe_copy:
+    # Restore registers
+    pop rcx
+    pop rax
+"""
+
+# Insert the check before the dangerous instruction
+reassembler.insert_asm_before_label(buffer_copy_addr, bounds_check)
+
+# Generate patched binary
+patched_asm = reassembler.assembly
+
+with open('hardened.s', 'w') as f:
+    f.write(patched_asm)
+```
+
+### Replacing Function Calls
+
+Replace dangerous functions with safer alternatives:
+
+```python
+import angr
+
+class FunctionReplacer:
+    def __init__(self, project, cfg):
+        self.project = project
+        self.cfg = cfg
+        self.reassembler = project.analyses.Reassembler(cfg=cfg)
+    
+    def replace_function_calls(self, old_func, new_func):
+        """
+        Replace all calls to old_func with calls to new_func
+        
+        Args:
+            old_func: Address or name of function to replace
+            new_func: Address or name of replacement function
+        """
+        # Find all call sites
+        call_sites = self._find_call_sites(old_func)
+        
+        for call_addr in call_sites:
+            # Get the replacement assembly
+            replacement = f"call {new_func}"
+            
+            # Remove old call
+            self.reassembler.remove_instruction(call_addr)
+            
+            # Insert new call
+            self.reassembler.insert_asm_after_label(
+                call_addr,
+                replacement
+            )
+        
+        return self.reassembler.assembly
+    
+    def _find_call_sites(self, func_name):
+        """Find all addresses that call the given function"""
+        call_sites = []
+        
+        for func in self.cfg.kb.functions.values():
+            for block in func.blocks:
+                # Get capstone disassembly
+                cs_block = self.project.factory.block(block.addr).capstone
+                
+                for insn in cs_block.insns:
+                    if insn.mnemonic == 'call':
+                        # Check if it's calling our target
+                        if func_name in insn.op_str:
+                            call_sites.append(insn.address)
+        
+        return call_sites
+
+# Usage
+project = angr.Project("./binary", auto_load_libs=False)
+cfg = project.analyses.CFGFast()
+
+replacer = FunctionReplacer(project, cfg)
+
+# Replace strcpy with strncpy
+patched = replacer.replace_function_calls('strcpy', 'strncpy')
+
+with open('safer_binary.s', 'w') as f:
+    f.write(patched)
+```
+
+## Binary Optimizer
+
+The BinaryOptimizer analysis applies code optimizations to improve performance.
+
+### Available Optimizations
+
+<Tabs>
+  <Tab title="Constant Propagation">
+    Replaces variables with their constant values:
+    
+    ```python
+    import angr
+    
+    project = angr.Project("./unoptimized", auto_load_libs=False)
+    cfg = project.analyses.CFGFast()
+    
+    # Run constant propagation
+    optimizer = project.analyses.BinaryOptimizer(
+        cfg=cfg,
+        techniques={'constant_propagation'}
+    )
+    
+    # View optimizations found
+    for cp in optimizer.constant_propagations:
+        print(f"Constant {hex(cp.constant)} propagates from " +
+              f"{hex(cp.constant_assignment_loc.ins_addr)} to " +
+              f"{hex(cp.constant_consuming_loc.ins_addr)}")
+    ```
+    
+    Example:
+    ```asm
+    # Before
+    mov eax, 42
+    mov [ebp-4], eax
+    mov ebx, [ebp-4]
+    
+    # After  
+    mov ebx, 42
+    ```
+  </Tab>
+  
+  <Tab title="Dead Assignment Elimination">
+    Removes assignments to unused variables:
+    
+    ```python
+    optimizer = project.analyses.BinaryOptimizer(
+        cfg=cfg,
+        techniques={'dead_assignment_elimination'}
+    )
+    
+    for dead in optimizer.dead_assignments:
+        print(f"Dead assignment: {dead.pv}")
+    ```
+    
+    Example:
+    ```asm
+    # Before
+    mov eax, 123    # Dead - eax never used
+    mov ebx, 456
+    call foo
+    
+    # After
+    mov ebx, 456
+    call foo
+    ```
+  </Tab>
+  
+  <Tab title="Register Reallocation">
+    Moves stack variables to registers:
+    
+    ```python
+    optimizer = project.analyses.BinaryOptimizer(
+        cfg=cfg,
+        techniques={'register_reallocation'}
+    )
+    
+    for rr in optimizer.register_reallocations:
+        print(f"{rr.register_variable} will replace {rr.stack_variable}")
+        print(f"  Sources: {len(rr.stack_variable_sources)}")
+        print(f"  Consumers: {len(rr.stack_variable_consumers)}")
+    ```
+    
+    Example:
+    ```asm
+    # Before
+    mov [ebp-4], eax   # Store to stack
+    ...
+    mov ebx, [ebp-4]   # Load from stack
+    
+    # After (using free register esi)
+    mov esi, eax       # Use register
+    ...
+    mov ebx, esi       # Direct register access
+    ```
+  </Tab>
+  
+  <Tab title="Redundant Stack Variable Removal">
+    Eliminates unnecessary stack copies:
+    
+    ```python
+    optimizer = project.analyses.BinaryOptimizer(
+        cfg=cfg,
+        techniques={'redundant_stack_variable_removal'}
+    )
+    
+    for rsv in optimizer.redundant_stack_variables:
+        print(f"Redundant: {rsv.stack_variable} for {rsv.argument}")
+        print(f"  Used at {len(rsv.stack_variable_consuming_locs)} locations")
+    ```
+    
+    Example:
+    ```asm
+    # Before
+    # Function copies argument to local variable
+    mov eax, [ebp+8]   # Load argument
+    mov [ebp-4], eax   # Save to local
+    ...
+    mov ebx, [ebp-4]   # Use local copy
+    
+    # After
+    # Direct use of argument
+    mov ebx, [ebp+8]   # Use argument directly
+    ```
+  </Tab>
+</Tabs>
+
+### Full Optimization Pipeline
+
+```python
+import angr
+
+class BinaryPatcher:
+    """Complete binary optimization and patching"""
+    
+    def __init__(self, binary_path):
+        self.project = angr.Project(binary_path, auto_load_libs=False)
+        self.cfg = None
+        self.optimizer = None
+        self.reassembler = None
+    
+    def analyze(self):
+        """Build CFG"""
+        print("[*] Building CFG...")
+        self.cfg = self.project.analyses.CFGFast()
+        print(f"[+] Found {len(self.cfg.kb.functions)} functions")
+    
+    def optimize(self, techniques=None):
+        """Apply optimizations"""
+        if techniques is None:
+            techniques = {
+                'constant_propagation',
+                'register_reallocation',
+                'redundant_stack_variable_removal',
+            }
+        
+        print(f"[*] Running optimizations: {techniques}")
+        self.optimizer = self.project.analyses.BinaryOptimizer(
+            cfg=self.cfg,
+            techniques=techniques
+        )
+        
+        # Report results
+        if 'constant_propagation' in techniques:
+            print(f"[+] Constant propagations: {len(self.optimizer.constant_propagations)}")
+        
+        if 'register_reallocation' in techniques:
+            print(f"[+] Register reallocations: {len(self.optimizer.register_reallocations)}")
+        
+        if 'redundant_stack_variable_removal' in techniques:
+            print(f"[+] Redundant stack variables: {len(self.optimizer.redundant_stack_variables)}")
+    
+    def patch_vulnerabilities(self, vuln_addrs):
+        """Patch specific vulnerability addresses"""
+        print(f"[*] Patching {len(vuln_addrs)} vulnerabilities...")
+        
+        self.reassembler = self.project.analyses.Reassembler(
+            cfg=self.cfg,
+            syntax='intel'
+        )
+        
+        for addr, patch_type in vuln_addrs:
+            if patch_type == 'remove':
+                self.reassembler.remove_instruction(addr)
+                print(f"[+] Removed instruction at {hex(addr)}")
+            
+            elif patch_type == 'bounds_check':
+                # Insert bounds check
+                check_code = self._generate_bounds_check()
+                self.reassembler.insert_asm_before_label(addr, check_code)
+                print(f"[+] Added bounds check at {hex(addr)}")
+    
+    def _generate_bounds_check(self):
+        """Generate bounds checking code"""
+        return """
+            push rax
+            cmp rsi, 256
+            jle .continue
+            mov rax, 60
+            mov rdi, 1
+            syscall
+        .continue:
+            pop rax
+        """
+    
+    def generate_output(self, output_path):
+        """Generate patched assembly"""
+        print(f"[*] Generating assembly to {output_path}...")
+        
+        if self.reassembler is None:
+            self.reassembler = self.project.analyses.Reassembler(
+                cfg=self.cfg,
+                syntax='intel'
+            )
+        
+        assembly = self.reassembler.assembly
+        
+        with open(output_path, 'w') as f:
+            f.write(assembly)
+        
+        print(f"[+] Assembly written to {output_path}")
+        print("[*] To compile:")
+        print(f"    as -o patched.o {output_path}")
+        print(f"    ld -o patched patched.o")
+
+# Usage
+patcher = BinaryPatcher("./vulnerable_binary")
+patcher.analyze()
+patcher.optimize()
+
+# Patch specific vulnerabilities
+vulnerabilities = [
+    (0x401234, 'bounds_check'),  # strcpy with bounds check
+    (0x401567, 'remove'),        # Remove dangerous instruction
+]
+
+patcher.patch_vulnerabilities(vulnerabilities)
+patcher.generate_output("patched.s")
+```
+
+## Advanced Patching Examples
+
+### Adding Stack Canary Protection
+
+```python
+import angr
+
+def add_stack_canary(project, function_addr):
+    """Add stack canary to a function"""
+    cfg = project.analyses.CFGFast()
+    reassembler = project.analyses.Reassembler(cfg=cfg, syntax='intel')
+    
+    func = cfg.kb.functions.get(function_addr)
+    if not func:
+        return None
+    
+    # Prologue: save canary
+    prologue_code = """
+        # Load canary from fs:0x28 (x86-64 Linux)
+        mov rax, QWORD PTR fs:0x28
+        mov QWORD PTR [rbp-8], rax
+        xor rax, rax
+    """
+    
+    # Insert after function prologue
+    reassembler.insert_asm_after_label(function_addr, prologue_code)
+    
+    # Epilogue: check canary before each return
+    for block in func.blocks:
+        cs_block = project.factory.block(block.addr).capstone
+        
+        for insn in cs_block.insns:
+            if insn.mnemonic == 'ret':
+                epilogue_code = """
+                    mov rax, QWORD PTR [rbp-8]
+                    xor rax, QWORD PTR fs:0x28
+                    je .canary_ok
+                    call __stack_chk_fail
+                .canary_ok:
+                """
+                reassembler.insert_asm_before_label(insn.address, epilogue_code)
+    
+    return reassembler.assembly
+
+# Usage
+project = angr.Project("./binary", auto_load_libs=False)
+patched = add_stack_canary(project, 0x401000)
+
+if patched:
+    with open('canary_protected.s', 'w') as f:
+        f.write(patched)
+```
+
+### Instrumenting for Logging/Tracing
+
+```python
+import angr
+
+def add_tracing(project, function_addr):
+    """Add entry/exit tracing to a function"""
+    cfg = project.analyses.CFGFast()
+    reassembler = project.analyses.Reassembler(cfg=cfg)
+    
+    func = cfg.kb.functions.get(function_addr)
+    func_name = func.name if func else f"func_{hex(function_addr)}"
+    
+    # Entry tracing
+    entry_trace = f"""
+        push rdi
+        push rsi
+        lea rdi, [rip+.entry_msg]
+        call puts
+        pop rsi
+        pop rdi
+        jmp .continue_entry
+    .entry_msg:
+        .asciz "TRACE: Entering {func_name}"
+    .continue_entry:
+    """
+    
+    reassembler.insert_asm_after_label(function_addr, entry_trace)
+    
+    # Exit tracing for each return
+    for block in func.blocks:
+        cs_block = project.factory.block(block.addr).capstone
+        
+        for insn in cs_block.insns:
+            if insn.mnemonic == 'ret':
+                exit_trace = f"""
+                    push rdi
+                    lea rdi, [rip+.exit_msg]
+                    call puts
+                    pop rdi
+                    jmp .continue_exit
+                .exit_msg:
+                    .asciz "TRACE: Exiting {func_name}"
+                .continue_exit:
+                """
+                reassembler.insert_asm_before_label(insn.address, exit_trace)
+    
+    return reassembler.assembly
+```
+
+## Working with Different Architectures
+
+<CodeGroup>
+```python x86-64
+project = angr.Project("./binary_x64", auto_load_libs=False)
+reassembler = project.analyses.Reassembler(
+    cfg=cfg,
+    syntax='intel'  # or 'at&t'
+)
+```
+
+```python x86-32
+project = angr.Project("./binary_x86", auto_load_libs=False)
+reassembler = project.analyses.Reassembler(
+    cfg=cfg,
+    syntax='intel'
+)
+```
+
+```python ARM
+project = angr.Project("./binary_arm", auto_load_libs=False)
+# ARM support is limited in reassembler
+# May need manual patching
+```
+</CodeGroup>
+
+<Note>
+Reassembler works best with x86/x86-64. ARM and other architectures have limited support and may require manual assembly modification.
+</Note>
+
+## Best Practices
+
+<Steps>
+  <Step title="Always backup original binary">
+    ```python
+    import shutil
+    shutil.copy2('./original', './original.backup')
+    ```
+  </Step>
+  
+  <Step title="Validate patched binary">
+    ```python
+    # Test basic functionality
+    import subprocess
+    
+    result = subprocess.run(
+        ['./patched_binary', 'test'],
+        capture_output=True,
+        timeout=5
+    )
+    
+    assert result.returncode == 0, "Patched binary crashed"
+    ```
+  </Step>
+  
+  <Step title="Preserve original semantics">
+    Only modify what's necessary. Overly aggressive patching can break functionality.
+  </Step>
+  
+  <Step title="Test edge cases">
+    Ensure patches work correctly with various inputs, especially boundary conditions.
+  </Step>
+</Steps>
+
+## Further Resources
+
+- [Reassembler API Documentation](https://docs.angr.io/en/latest/api.html)
+- [Binary Optimizer Source](https://github.com/angr/angr/blob/master/angr/analyses/binary_optimizer.py)
+- [Patcherex - angr Patching Extension](https://github.com/angr/patcherex)

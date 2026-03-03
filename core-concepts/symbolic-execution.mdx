@@ -1,0 +1,396 @@
+---
+title: Symbolic Execution Concepts
+description: Understanding symbolic execution and how angr uses it for program analysis
+---
+
+Symbolic execution is a program analysis technique that explores multiple execution paths simultaneously by treating inputs as symbolic variables rather than concrete values.
+
+## What is Symbolic Execution?
+
+Unlike normal execution that runs a program with specific inputs, symbolic execution treats inputs as **symbolic variables** - abstract placeholders that can represent any value. As the program executes, operations on these symbolic values create **constraints** that describe the conditions under which specific paths are taken.
+
+### Example: Branching
+
+Consider this simple function:
+
+```c
+const char* check_value(int x) {
+    if (x > 10) {
+        return "Greater";
+    } else {
+        return "Lesser or Equal";  
+    }
+}
+```
+
+<Tabs>
+  <Tab title="Concrete Execution">
+    With `x = 5`:
+    - Evaluates `5 > 10` → `False`
+    - Takes else branch
+    - Returns "Lesser or Equal"
+    - Only one path explored
+  </Tab>
+  
+  <Tab title="Symbolic Execution">
+    With symbolic `x`:
+    - Evaluates `x > 10` → symbolic boolean
+    - Explores BOTH paths:
+      - Path 1: Add constraint `x > 10`, return "Greater"
+      - Path 2: Add constraint `x ≤ 10`, return "Lesser or Equal"
+    - Both paths maintained simultaneously
+  </Tab>
+</Tabs>
+
+## Symbolic Execution in angr
+
+angr performs symbolic execution by:
+
+<Steps>
+
+<Step title="Creating symbolic variables">
+  Input data (stdin, function arguments, memory) can be marked as symbolic
+</Step>
+
+<Step title="Executing instructions symbolically">
+  Operations on symbolic values create expression trees (ASTs)
+</Step>
+
+<Step title="Handling branches">
+  When a branch condition is symbolic, angr creates separate states for each possible path
+</Step>
+
+<Step title="Collecting constraints">
+  Each state accumulates constraints describing the conditions that led to it
+</Step>
+
+<Step title="Solving constraints">
+  Use a constraint solver (z3) to find concrete values satisfying the constraints
+</Step>
+
+</Steps>
+
+## Basic Example
+
+Here's a simple example finding valid input for a function:
+
+```c
+void check_password(uint32_t num) {
+    if (num > 50 && num < 100) {
+        printf("Correct!\n");
+    } else {
+        printf("Wrong!\n");
+    }
+}
+```
+
+Using angr to find valid input:
+
+```python
+import angr
+import claripy
+
+# Load the binary
+proj = angr.Project('./program', auto_load_libs=False)
+
+# Create a symbolic variable for input
+input_arg = claripy.BVS('input_arg', 32)  # 32-bit symbolic value
+
+# Create state at the function start
+check_password_addr = proj.loader.find_symbol('check_password').rebased_addr
+state = proj.factory.blank_state(addr=check_password_addr)
+
+# Set the function argument (calling convention: first arg in edi on x86-64)
+state.regs.edi = input_arg
+
+# Create simulation manager and explore
+simgr = proj.factory.simulation_manager(state)
+
+# Find the "Correct!" path
+correct_addr = proj.loader.find_symbol('correct_path').rebased_addr
+simgr.explore(find=correct_addr)
+
+if simgr.found:
+    solution_state = simgr.found[0]
+    solution = solution_state.solver.eval(input_arg)
+    print(f"Valid input: {solution}")  # Will be between 51-99
+```
+
+## Path Explosion
+
+Symbolic execution can lead to **path explosion** - the number of paths grows exponentially with branches:
+
+```python
+# Each branch doubles the number of paths
+if (symbolic_condition_1):  # 2 paths
+    if (symbolic_condition_2):  # 4 paths
+        if (symbolic_condition_3):  # 8 paths
+            if (symbolic_condition_4):  # 16 paths
+                # ...
+```
+
+angr provides several techniques to manage this:
+
+### Merging States
+
+Merge similar states to reduce the number of paths:
+
+```python
+simgr = proj.factory.simulation_manager(state)
+
+# Periodically merge states
+for _ in range(100):
+    simgr.step()
+    if _ % 10 == 0:
+        simgr.merge()  # Combine similar states
+```
+
+### Exploration Techniques
+
+Use exploration techniques to guide exploration:
+
+```python
+import angr
+
+# Depth-first search (uses less memory)
+simgr.use_technique(angr.exploration_techniques.DFS())
+
+# Loop detection and handling
+simgr.use_technique(angr.exploration_techniques.LoopSeer())
+
+# Limit execution depth
+simgr.use_technique(angr.exploration_techniques.LengthLimiter(max_length=100))
+
+# Veritesting (hybrid symbolic/static execution)
+simgr.use_technique(angr.exploration_techniques.Veritesting())
+```
+
+### Finding Specific Paths
+
+Use `explore()` to only follow interesting paths:
+
+```python
+# Only explore paths leading to target, avoid known bad paths
+simgr.explore(
+    find=target_addr,
+    avoid=[error_addr, infinite_loop_addr]
+)
+```
+
+## Symbolic Input
+
+Different ways to introduce symbolic input:
+
+### Symbolic Stdin
+
+```python
+import claripy
+
+# Create symbolic input buffer
+input_data = claripy.BVS('input', 8 * 100)  # 100 bytes
+
+# Create state with symbolic stdin
+state = proj.factory.entry_state(stdin=input_data)
+
+# Constrain to printable ASCII
+for i in range(100):
+    byte = input_data.get_byte(i)
+    state.solver.add(byte >= 0x20)
+    state.solver.add(byte <= 0x7e)
+```
+
+### Symbolic Function Arguments
+
+```python
+import claripy
+
+# Create symbolic arguments
+arg1 = claripy.BVS('arg1', 64)
+arg2 = claripy.BVS('arg2', 64)
+
+# Create call state
+state = proj.factory.call_state(func_addr, arg1, arg2)
+```
+
+### Symbolic Memory
+
+```python
+import claripy
+
+# Create symbolic buffer in memory
+buffer_addr = 0x1000
+buffer = claripy.BVS('buffer', 8 * 256)
+state.memory.store(buffer_addr, buffer)
+```
+
+### Symbolic Files
+
+```python
+import angr
+import claripy
+
+# Create symbolic file
+file_content = claripy.BVS('file_content', 8 * 1024)
+simfile = angr.storage.SimFile('input.txt', content=file_content, size=1024)
+
+state = proj.factory.entry_state(fs={'/path/to/input.txt': simfile})
+```
+
+## Extracting Solutions
+
+Once you find a target state, extract the input that reaches it:
+
+```python
+if simgr.found:
+    solution_state = simgr.found[0]
+    
+    # Get concrete value for symbolic variable
+    flag_value = solution_state.solver.eval(flag_symbol, cast_to=bytes)
+    print(f"Flag: {flag_value}")
+    
+    # Get stdin contents
+    stdin_content = solution_state.posix.dumps(0)  # fd 0 = stdin
+    print(f"Input: {stdin_content}")
+    
+    # Get value in register
+    rax_value = solution_state.solver.eval(solution_state.regs.rax)
+    print(f"RAX: {rax_value:#x}")
+```
+
+## Real-World Example: Password Check
+
+Finding a password in a binary:
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('./password_checker')
+
+# Create symbolic password (assume max 32 chars)
+password = claripy.BVS('password', 8 * 32)
+
+state = proj.factory.entry_state(stdin=password)
+
+# Constrain to printable chars and null-terminated
+for i in range(31):
+    char = password.get_byte(i)  
+    state.solver.add(char >= 0x20)
+    state.solver.add(char <= 0x7e)
+state.solver.add(password.get_byte(31) == 0)  # null terminator
+
+# Find success path
+def found_success(state):
+    output = state.posix.dumps(1)  # stdout
+    return b"Access granted" in output
+
+def hit_failure(state):
+    output = state.posix.dumps(1)
+    return b"Access denied" in output
+
+simgr = proj.factory.simulation_manager(state)
+simgr.explore(find=found_success, avoid=hit_failure)
+
+if simgr.found:
+    solution = simgr.found[0]
+    password_str = solution.solver.eval(password, cast_to=bytes)
+    password_str = password_str.split(b'\x00')[0]  # trim after null
+    print(f"Password: {password_str.decode()}")
+```
+
+## Advanced: Finding Backdoors
+
+Using symbolic execution to find authentication backdoors:
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('./fauxware')  # Example backdoored binary
+
+# Create state with symbolic stdin
+state = proj.factory.entry_state(stdin=angr.SimFile)
+
+# Step until we hit a branch with multiple successors
+while True:
+    succ = state.step()
+    if len(succ.successors) == 2:
+        break
+    state = succ.successors[0]
+
+# One path is the backdoor, one is not
+state1, state2 = succ.successors
+
+# Get the input that would trigger each path
+input_data = state1.posix.stdin.load(0, state1.posix.stdin.size)
+
+backdoor_input = state1.solver.eval(input_data, cast_to=bytes)
+print(f"Backdoor password: {backdoor_input}")
+# Output: b'SOSNEAKY'
+
+normal_input = state2.solver.eval(input_data, cast_to=bytes)  
+print(f"Normal input example: {normal_input}")
+```
+
+## Understanding Constraints
+
+Constraints accumulate as execution progresses:
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('./binary')
+x = claripy.BVS('x', 32)
+
+state = proj.factory.blank_state()
+state.regs.eax = x
+
+# Add constraints
+state.solver.add(x > 10)
+state.solver.add(x < 100)
+state.solver.add(x % 2 == 0)  # must be even
+
+# Check satisfiability
+if state.satisfiable():
+    # Get a solution
+    solution = state.solver.eval(x)
+    print(f"One solution: {solution}")  # e.g., 12
+    
+    # Get min/max
+    min_val = state.solver.min(x)  # 12
+    max_val = state.solver.max(x)  # 98
+    
+    # Get multiple solutions
+    solutions = state.solver.eval_upto(x, 5)
+    print(f"Five solutions: {solutions}")  # [12, 14, 16, 18, 20]
+```
+
+## Tips for Effective Symbolic Execution
+
+<Note>
+**Start Small**: Begin with small symbolic inputs and gradually increase size
+</Note>
+
+<Note>
+**Use Constraints**: Add constraints to limit the solution space (e.g., printable chars only)
+</Note>
+
+<Note>
+**Avoid Unnecessary Paths**: Use `explore(avoid=...)` to skip error paths and loops
+</Note>
+
+<Note>
+**Merge Strategically**: Merge states periodically to prevent path explosion
+</Note>
+
+<Warning>
+Symbolic execution of complex library functions (like crypto or compression) can cause severe path explosion. Consider hooking them with simplified implementations.
+</Warning>
+
+## See Also
+
+- [Constraint Solving](/core-concepts/solver)
+- [SimulationManager](/core-concepts/simulation)
+- [SimState](/core-concepts/states)
+- [Exploration Techniques](/advanced-topics/exploration-techniques)

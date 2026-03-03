@@ -1,0 +1,440 @@
+---
+title: Using angr to Solve CTF Challenges
+description: Complete workflows and techniques for solving CTF reversing challenges with angr's symbolic execution engine
+---
+
+angr is a powerful tool for solving CTF challenges that involve reverse engineering and finding hidden flags. This guide shows you practical workflows used by Shellphish and other CTF teams.
+
+## Overview
+
+angr excels at CTF challenges because it can:
+- Automatically find paths to specific program states
+- Solve complex input constraints symbolically
+- Handle obfuscated or packed binaries
+- Scale from simple crackmes to complex reversing challenges
+
+## Basic CTF Challenge Workflow
+
+<Steps>
+  <Step title="Load the binary">
+    Start by creating an angr project for your target binary:
+
+    ```python
+    import angr
+
+    # Load with auto_load_libs=False for faster analysis
+    project = angr.Project("./challenge", auto_load_libs=False)
+    ```
+
+    <Tip>
+    Use `auto_load_libs=False` for CTF challenges to speed up analysis. Most challenges don't need full library support.
+    </Tip>
+  </Step>
+
+  <Step title="Identify target and avoid addresses">
+    Find the addresses where you want to reach (success) or avoid (failure):
+
+    ```python
+    # Address that prints the flag or indicates success
+    find_addr = 0x400844
+
+    # Address(es) that indicate failure
+    avoid_addrs = [0x400850, 0x400860]
+    ```
+
+    You can use tools like IDA, Ghidra, or objdump to identify these addresses.
+  </Step>
+
+  <Step title="Set up symbolic execution">
+    Configure symbolic input (stdin, files, or arguments):
+
+    ```python
+    # Create initial state with symbolic stdin
+    state = project.factory.entry_state(
+        stdin=angr.SimFile('/dev/stdin', size=100)
+    )
+
+    # Or use symbolic arguments
+    state = project.factory.entry_state(
+        args=['./challenge', angr.claripy.BVS('arg1', 8*32)]
+    )
+    ```
+  </Step>
+
+  <Step title="Run symbolic execution">
+    Use the simulation manager to explore paths:
+
+    ```python
+    simgr = project.factory.simulation_manager(state)
+    simgr.explore(find=find_addr, avoid=avoid_addrs)
+
+    if simgr.found:
+        solution_state = simgr.found[0]
+        flag = solution_state.posix.dumps(0)  # stdin
+        print("Flag:", flag)
+    ```
+  </Step>
+</Steps>
+
+## Real-World Example: Simple Flag Finder
+
+Here's a complete script based on the defcamp_r100 challenge:
+
+```python
+import angr
+
+project = angr.Project("./r100", auto_load_libs=False)
+
+# Hook the address that prints the flag
+@project.hook(0x400844)
+def print_flag(state):
+    print("FLAG SHOULD BE:", state.posix.dumps(0))
+    project.terminate_execution()
+
+project.execute()
+```
+
+<Note>
+This example uses angr's hooking mechanism to intercept execution at the flag-printing function and extract the input that led there.
+</Note>
+
+## Advanced CTF Techniques
+
+### Constraining Input with Custom Conditions
+
+For challenges that require specific input formats:
+
+```python
+import angr
+import claripy
+
+project = angr.Project("./challenge", auto_load_libs=False)
+
+# Create symbolic input with constraints
+flag = claripy.BVS('flag', 8 * 32)
+state = project.factory.entry_state(stdin=flag)
+
+# Constrain to printable ASCII
+for i in range(32):
+    byte = flag.get_byte(i)
+    state.solver.add(byte >= 0x20)  # Space
+    state.solver.add(byte <= 0x7e)  # Tilde
+
+simgr = project.factory.simulation_manager(state)
+```
+
+### Using Unicorn for Performance
+
+For challenges with heavy computation, enable Unicorn engine:
+
+```python
+state = project.factory.entry_state(
+    add_options=angr.options.unicorn
+)
+```
+
+<CodeGroup>
+```python Without Unicorn
+# Standard symbolic execution (slower)
+state = project.factory.entry_state()
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=target_addr)
+```
+
+```python With Unicorn
+# Concrete execution fallback (much faster)
+state = project.factory.entry_state(
+    add_options=angr.options.unicorn
+)
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=target_addr)
+# Can run 10-100x faster on suitable workloads
+```
+</CodeGroup>
+
+### Handling Self-Modifying Code
+
+For packed or obfuscated binaries (like the TUMCTF zwiebel challenge):
+
+```python
+import angr
+
+project = angr.Project("./packed_binary", auto_load_libs=False)
+
+# Enable self-modifying code support
+state = project.factory.entry_state(
+    add_options={
+        angr.options.STRICT_PAGE_ACCESS,
+    },
+    remove_options={
+        angr.options.LAZY_SOLVES,
+    }
+)
+
+# Use Unicorn for the unpacking stub
+state.options.add(angr.options.unicorn)
+```
+
+<Warning>
+Self-modifying code analysis is very slow without Unicorn. Expect execution times in hours for complex packers.
+</Warning>
+
+## Exploration Techniques
+
+### Guided Symbolic Tracing
+
+When you know the execution trace (from a debugger or tracer):
+
+```python
+import angr
+
+project = angr.Project("./traced_binary", auto_load_libs=False)
+state = project.factory.entry_state()
+
+# Define the known execution trace
+trace = [0x400500, 0x400510, 0x400520, 0x400530]
+
+simgr = project.factory.simulation_manager(state)
+
+for addr in trace:
+    # Force execution to follow the trace
+    simgr.step(until=lambda sm: any(s.addr == addr for s in sm.active))
+    
+    # Prune states not on the trace
+    simgr.stash(filter_func=lambda s: s.addr != addr, from_stash='active', to_stash='pruned')
+
+# Solve for the input that produces this trace
+if simgr.active:
+    solution = simgr.active[0].posix.dumps(0)
+    print("Input:", solution)
+```
+
+### Custom Find Conditions
+
+For more complex success criteria:
+
+```python
+def is_successful(state):
+    """Custom condition to find states that strcpy from controlled input"""
+    # Check if we're calling strcpy
+    if state.addr == 0x080483e4:  # strcpy call site
+        # Check if source argument is symbolic (we control it)
+        src_ptr = state.regs.esi  # Second argument (source)
+        if state.solver.symbolic(src_ptr):
+            return True
+    return False
+
+simgr.explore(find=is_successful)
+```
+
+## Working with Different Input Sources
+
+<Tabs>
+  <Tab title="Standard Input">
+    ```python
+    # Symbolic stdin
+    state = project.factory.entry_state(
+        stdin=angr.SimFile('/dev/stdin', size=100)
+    )
+    
+    # Extract solution
+    if simgr.found:
+        solution = simgr.found[0].posix.dumps(0)
+        print("Input:", solution)
+    ```
+  </Tab>
+  
+  <Tab title="Command Arguments">
+    ```python
+    # Symbolic command-line arguments
+    arg1 = claripy.BVS('arg1', 8 * 32)
+    state = project.factory.entry_state(
+        args=['./program', arg1]
+    )
+    
+    # Extract solution
+    if simgr.found:
+        solution = simgr.found[0].solver.eval(arg1, cast_to=bytes)
+        print("Argument:", solution)
+    ```
+  </Tab>
+  
+  <Tab title="File Input">
+    ```python
+    # Create symbolic file
+    license_file = angr.SimFile(
+        'license.txt',
+        content=claripy.BVS('license', 8 * 64),
+        size=64
+    )
+    
+    state = project.factory.entry_state(
+        fs={'/home/user/license.txt': license_file}
+    )
+    
+    # Extract solution
+    if simgr.found:
+        solution = simgr.found[0].posix.dumps(license_file.ident)
+        print("License:", solution)
+    ```
+  </Tab>
+</Tabs>
+
+## Performance Optimization Tips
+
+<Steps>
+  <Step title="Use aggressive pruning">
+    ```python
+    # Limit the number of active states
+    simgr.explore(
+        find=target,
+        avoid=bad_addrs,
+        n=1  # Stop after finding one solution
+    )
+    ```
+  </Step>
+  
+  <Step title="Enable Unicorn engine">
+    ```python
+    state.options.add(angr.options.unicorn)
+    ```
+    
+    Can provide 10-100x speedup for concrete execution segments.
+  </Step>
+  
+  <Step title="Avoid unnecessary library loading">
+    ```python
+    project = angr.Project("./binary", auto_load_libs=False)
+    ```
+  </Step>
+  
+  <Step title="Use targeted exploration">
+    ```python
+    # Start from a specific point instead of entry
+    state = project.factory.blank_state(addr=0x400500)
+    
+    # Manually set up registers/memory if needed
+    state.regs.rdi = 0x1000
+    ```
+  </Step>
+</Steps>
+
+## Common CTF Challenge Patterns
+
+### Pattern 1: Password Checker
+
+```python
+import angr
+import claripy
+
+project = angr.Project("./password_checker", auto_load_libs=False)
+
+# Symbolic password
+password = claripy.BVS('password', 8 * 32)
+state = project.factory.entry_state(stdin=password)
+
+# Find "Access Granted" path
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=lambda s: b"Access Granted" in s.posix.dumps(1))
+
+if simgr.found:
+    solution = simgr.found[0].solver.eval(password, cast_to=bytes)
+    print("Password:", solution.rstrip(b'\x00'))
+```
+
+### Pattern 2: Serial/License Key Validation
+
+```python
+import angr
+
+project = angr.Project("./keygen", auto_load_libs=False)
+
+# Many keygens check the return value of validation function
+validation_func = 0x401000
+call_site = 0x401234
+
+state = project.factory.call_state(
+    validation_func,
+    claripy.BVS('serial', 8 * 16)
+)
+
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=lambda s: s.regs.eax != 0)  # Non-zero = valid
+
+if simgr.found:
+    serial = simgr.found[0].solver.eval(state.regs.rdi, cast_to=bytes)
+    print("Valid serial:", serial)
+```
+
+### Pattern 3: Crypto/Hash Reversal (Partial)
+
+```python
+import angr
+import claripy
+
+# For simple crypto that angr can solve
+project = angr.Project("./crypto_check", auto_load_libs=False)
+
+flag = claripy.BVS('flag', 8 * 32)
+state = project.factory.entry_state(args=['./crypto_check', flag])
+
+# Constrain to known prefix
+state.solver.add(flag.get_bytes(0, 5) == b'flag{')
+state.solver.add(flag.get_byte(31) == ord('}'))
+
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=success_addr, avoid=fail_addr)
+
+if simgr.found:
+    solution = simgr.found[0].solver.eval(flag, cast_to=bytes)
+    print("Flag:", solution)
+```
+
+<Note>
+For strong cryptography, angr may timeout. Use it to reduce the keyspace, then brute-force the remainder.
+</Note>
+
+## Troubleshooting
+
+### State Explosion
+
+If you have too many active states:
+
+```python
+# Use exploration techniques to limit state explosion
+from angr import exploration_techniques as et
+
+simgr.use_technique(et.DFS())  # Depth-first search
+# or
+simgr.use_technique(et.Explorer(
+    find=target,
+    avoid=bad_addrs,
+    num_find=1
+))
+```
+
+### Timeout Issues
+
+```python
+import signal
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Symbolic execution timed out")
+
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(300)  # 5 minute timeout
+
+try:
+    simgr.explore(find=target)
+except TimeoutError:
+    print("Timed out, trying with Unicorn...")
+    state.options.add(angr.options.unicorn)
+    simgr = project.factory.simulation_manager(state)
+    simgr.explore(find=target)
+```
+
+## Further Resources
+
+- [angr Examples Repository](https://github.com/angr/angr-examples) - 50+ solved CTF challenges
+- [angr API Documentation](https://docs.angr.io/en/latest/api.html)
+- [angr Strategies Cheatsheet](https://github.com/bordig-f/angr-strategies) - Quick reference for common patterns

@@ -1,0 +1,515 @@
+---
+title: Exploration Techniques API
+description: Techniques for controlling symbolic execution exploration in angr
+---
+
+Exploration techniques are hooks for a simulation manager that assist in implementing new symbolic exploration strategies. They allow you to customize how states are selected, stepped, and categorized during execution.
+
+## ExplorationTechnique
+
+Base class for all exploration techniques.
+
+```python
+class ExplorationTechnique:
+    def __init__(self)
+```
+
+Subclass this and override any of the hook methods to implement custom exploration strategies.
+
+### Attributes
+
+<ResponseField name="project" type="angr.Project">
+  The angr project (set automatically by simulation manager)
+</ResponseField>
+
+### Hook Methods
+
+All hook methods are optional to override. Each receives the simulation manager and should call the corresponding `simgr.*` method to delegate to the default behavior.
+
+#### setup
+
+Perform initialization when added to a simulation manager.
+
+```python
+def setup(self, simgr: SimulationManager)
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager to which this technique was added
+</ParamField>
+
+Use this to initialize stashes or other resources.
+
+#### step
+
+Hook the process of stepping a stash forward.
+
+```python
+def step(self, simgr: SimulationManager, stash: str = "active", **kwargs)
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager being stepped
+</ParamField>
+
+<ParamField path="stash" type="str" default="active">
+  The stash to step
+</ParamField>
+
+Should call `simgr.step(stash=stash, **kwargs)` to perform actual processing.
+
+#### filter
+
+Filter states into different stashes.
+
+```python
+def filter(self, simgr: SimulationManager, state: SimState, **kwargs) -> str | tuple[str, SimState]
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager
+</ParamField>
+
+<ParamField path="state" type="SimState" required>
+  The state to categorize
+</ParamField>
+
+Returns:
+- **str**: Name of stash to move state to
+- **tuple**: (stash_name, modified_state) to modify state before moving
+- **Result of simgr.filter()**: Defer to default categorization
+
+If user provided `filter_func` in step/run command, it appears here.
+
+#### selector
+
+Determine if a state should participate in stepping.
+
+```python
+def selector(self, simgr: SimulationManager, state: SimState, **kwargs) -> bool
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager
+</ParamField>
+
+<ParamField path="state" type="SimState" required>
+  The state to check
+</ParamField>
+
+Returns:
+- **True**: State should be stepped
+- **False**: State should not be stepped
+- **Result of simgr.selector()**: Defer to default selection
+
+If user provided `selector_func` in step/run command, it appears here.
+
+#### step_state
+
+Categorize state successors into stashes.
+
+```python
+def step_state(self, simgr: SimulationManager, state: SimState, **kwargs) -> dict[str | None, list[SimState]]
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager
+</ParamField>
+
+<ParamField path="state" type="SimState" required>
+  The state to step
+</ParamField>
+
+Returns a dict mapping stash names to lists of successor states. Use `None` as stash name to apply default categorization.
+
+Takes precedence over the `filter` hook - `filter` only applies to states in the `None` stash.
+
+To work with `SimSuccessors` directly: `simgr.successors(state, **kwargs)`
+
+#### successors
+
+Generate successors for a state.
+
+```python
+def successors(self, simgr: SimulationManager, state: SimState, **kwargs) -> SimSuccessors
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager
+</ParamField>
+
+<ParamField path="state" type="SimState" required>
+  The state to step
+</ParamField>
+
+Returns a `SimSuccessors` object. Defer to default with `simgr.successors(state, **kwargs)`.
+
+If user provided `successor_func` in step/run command, it appears here.
+
+#### complete
+
+Determine if exploration should halt.
+
+```python
+def complete(self, simgr: SimulationManager) -> bool
+```
+
+<ParamField path="simgr" type="SimulationManager" required>
+  The simulation manager
+</ParamField>
+
+Returns **True** if `SimulationManager.run()` should halt, **False** otherwise.
+
+**Important**: Do NOT call `simgr.complete` - make your own decision. Each technique's completion checker is called and results are combined with `simgr.completion_mode`.
+
+---
+
+## Built-in Exploration Techniques
+
+### DFS
+
+Depth-first search exploration.
+
+```python
+class DFS(ExplorationTechnique):
+    def __init__(self, deferred_stash: str = "deferred")
+```
+
+<ParamField path="deferred_stash" type="str" default="deferred">
+  Name of stash for deferred states
+</ParamField>
+
+Keeps only one path active at a time. Other paths are stashed in 'deferred'. When active is empty, takes the most recent path from deferred.
+
+<Accordion title="Example: DFS">
+```python
+import angr
+from angr.exploration_techniques import DFS
+
+project = angr.Project('/bin/example')
+state = project.factory.entry_state()
+simgr = project.factory.simulation_manager(state)
+
+# Use depth-first search
+simgr.use_technique(DFS())
+simgr.run()
+```
+</Accordion>
+
+---
+
+### Explorer
+
+Search for states satisfying find/avoid conditions.
+
+```python
+class Explorer(ExplorationTechnique):
+    def __init__(self,
+                 find=None,
+                 avoid=None,
+                 find_stash: str = "found",
+                 avoid_stash: str = "avoid",
+                 cfg=None,
+                 num_find: int = 1,
+                 avoid_priority: bool = False)
+```
+
+<ParamField path="find" type="int | set | list | callable">
+  Address(es) to find, or function taking state returning bool/address set
+</ParamField>
+
+<ParamField path="avoid" type="int | set | list | callable">
+  Address(es) to avoid, or function taking state returning bool/address set
+</ParamField>
+
+<ParamField path="find_stash" type="str" default="found">
+  Stash name for found states
+</ParamField>
+
+<ParamField path="avoid_stash" type="str" default="avoid">
+  Stash name for avoided states
+</ParamField>
+
+<ParamField path="cfg" type="CFG">
+  Optional CFG for preemptive avoidance (paths that can't reach find without avoid)
+</ParamField>
+
+<ParamField path="num_find" type="int" default="1">
+  Stop after finding this many states
+</ParamField>
+
+<ParamField path="avoid_priority" type="bool" default="False">
+  If True and state matches both find and avoid, put in avoid stash
+</ParamField>
+
+<Accordion title="Example: Explorer">
+```python
+import angr
+from angr.exploration_techniques import Explorer
+
+project = angr.Project('/bin/example')
+state = project.factory.entry_state()
+simgr = project.factory.simulation_manager(state)
+
+# Find specific address, avoid others
+simgr.use_technique(Explorer(
+    find=0x400678,
+    avoid=[0x400680, 0x400690]
+))
+simgr.run()
+
+if simgr.found:
+    print(f"Found {len(simgr.found)} solution states")
+    solution = simgr.found[0]
+
+# Using lambda for dynamic conditions
+simgr.use_technique(Explorer(
+    find=lambda s: b"success" in s.posix.dumps(1),
+    avoid=lambda s: b"failure" in s.posix.dumps(1)
+))
+```
+</Accordion>
+
+---
+
+### LengthLimiter
+
+Limit path length by block count.
+
+```python
+class LengthLimiter(ExplorationTechnique):
+    def __init__(self, max_length: int, drop: bool = False)
+```
+
+<ParamField path="max_length" type="int" required>
+  Maximum number of blocks in a path
+</ParamField>
+
+<ParamField path="drop" type="bool" default="False">
+  If True, drop states exceeding limit. If False, move to 'cut' stash
+</ParamField>
+
+<Accordion title="Example: LengthLimiter">
+```python
+from angr.exploration_techniques import LengthLimiter
+
+simgr.use_technique(LengthLimiter(max_length=100))
+simgr.run()
+
+print(f"Active states: {len(simgr.active)}")
+print(f"Cut states: {len(simgr.cut)}")
+```
+</Accordion>
+
+---
+
+### Veritesting
+
+Enable veritesting for smart state merging in loops.
+
+```python
+class Veritesting(ExplorationTechnique):
+    def __init__(self, **options)
+```
+
+<ParamField path="options" type="dict">
+  Options passed to Veritesting analysis
+</ParamField>
+
+Addresses state explosion in loops by performing smart merging. Based on the CMU paper: https://users.ece.cmu.edu/~aavgerin/papers/veritesting-icse-2014.pdf
+
+<Accordion title="Example: Veritesting">
+```python
+from angr.exploration_techniques import Veritesting
+
+simgr.use_technique(Veritesting())
+simgr.run()
+```
+</Accordion>
+
+---
+
+### DrillerCore
+
+Concolic execution combining symbolic and concrete execution.
+
+```python
+class DrillerCore(ExplorationTechnique):
+    def __init__(self, trace, fuzz_bitmap=None)
+```
+
+<ParamField path="trace" type="list[int]" required>
+  Concrete execution trace to follow
+</ParamField>
+
+<ParamField path="fuzz_bitmap" type="bytes">
+  AFL-style bitmap for coverage tracking
+</ParamField>
+
+Follows a concrete trace and generates inputs to explore alternative paths.
+
+---
+
+### Tracer
+
+Trace a concrete execution path.
+
+```python
+class Tracer(ExplorationTechnique):
+    def __init__(self, trace, resiliency=False, keep_predecessors=1, crash_addr=None)
+```
+
+<ParamField path="trace" type="list[int]" required>
+  List of basic block addresses to follow
+</ParamField>
+
+<ParamField path="resiliency" type="bool" default="False">
+  Continue even if trace diverges
+</ParamField>
+
+<ParamField path="keep_predecessors" type="int" default="1">
+  Number of predecessor states to keep
+</ParamField>
+
+<ParamField path="crash_addr" type="int">
+  Address where crash occurs
+</ParamField>
+
+---
+
+### Threading
+
+Parallelize symbolic execution across threads.
+
+```python
+class Threading(ExplorationTechnique):
+    def __init__(self, threads=None)
+```
+
+<ParamField path="threads" type="int">
+  Number of worker threads (default: CPU count)
+</ParamField>
+
+---
+
+### Spiller
+
+Spill states to disk to conserve memory.
+
+```python
+class Spiller(ExplorationTechnique):
+    def __init__(self,
+                 min_states: int = 10,
+                 max_states: int = 100,
+                 staging_min: int = 5,
+                 staging_max: int = 10,
+                 priority_key=None)
+```
+
+<ParamField path="min_states" type="int" default="10">
+  Keep at least this many states in memory
+</ParamField>
+
+<ParamField path="max_states" type="int" default="100">
+  Spill to disk when exceeding this many states
+</ParamField>
+
+<ParamField path="staging_min" type="int" default="5">
+  Minimum states in staging stash
+</ParamField>
+
+<ParamField path="staging_max" type="int" default="10">
+  Maximum states in staging stash before spilling
+</ParamField>
+
+<ParamField path="priority_key" type="callable">
+  Function to determine spill priority (lower priority spilled first)
+</ParamField>
+
+---
+
+## Custom Exploration Techniques
+
+<Accordion title="Example: Custom Technique">
+```python
+from angr.exploration_techniques import ExplorationTechnique
+
+class AvoidStrings(ExplorationTechnique):
+    """Avoid states that print specific strings"""
+    
+    def __init__(self, avoid_strings):
+        super().__init__()
+        self.avoid_strings = avoid_strings
+    
+    def filter(self, simgr, state, **kwargs):
+        # Check stdout for avoided strings
+        output = state.posix.dumps(1)
+        for avoid_str in self.avoid_strings:
+            if avoid_str in output:
+                return 'avoided'
+        
+        # Defer to default filtering
+        return simgr.filter(state, **kwargs)
+
+# Use custom technique
+simgr.use_technique(AvoidStrings([b'error', b'fatal']))
+simgr.run()
+```
+</Accordion>
+
+<Accordion title="Example: Priority-Based Exploration">
+```python
+class PriorityExplorer(ExplorationTechnique):
+    """Select states based on priority function"""
+    
+    def __init__(self, priority_func):
+        super().__init__()
+        self.priority_func = priority_func
+    
+    def step(self, simgr, stash='active', **kwargs):
+        # Sort states by priority
+        if stash in simgr.stashes and simgr.stashes[stash]:
+            simgr.stashes[stash].sort(
+                key=self.priority_func,
+                reverse=True
+            )
+        
+        # Step normally
+        return simgr.step(stash=stash, **kwargs)
+
+# Prioritize states closer to target
+def distance_priority(state):
+    target = 0x400800
+    return -abs(state.addr - target)
+
+simgr.use_technique(PriorityExplorer(distance_priority))
+```
+</Accordion>
+
+---
+
+## Usage Patterns
+
+### Combining Techniques
+
+Multiple techniques can be used together:
+
+```python
+from angr.exploration_techniques import DFS, LengthLimiter, Explorer
+
+simgr.use_technique(DFS())
+simgr.use_technique(LengthLimiter(max_length=200))
+simgr.use_technique(Explorer(find=0x400678))
+
+simgr.run()
+```
+
+### Removing Techniques
+
+```python
+# Get technique instance
+explorer = simgr.techniques[0]  # if you know the index
+
+# Or remove by type
+simgr.remove_technique(Explorer)
+```

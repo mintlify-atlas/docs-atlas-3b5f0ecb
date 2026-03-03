@@ -1,0 +1,722 @@
+---
+title: Variables Plugin
+description: VariableManager API reference for managing variables in angr
+---
+
+The `VariableManager` plugin manages variables across the entire binary, including local variables, stack variables, registers, and global variables. It provides per-function variable tracking and type information.
+
+## VariableManager Class
+
+```python
+class VariableManager(KnowledgeBasePlugin):
+    """Manages variables across functions and globally."""
+```
+
+### Constructor
+
+<ParamField path="kb" type="KnowledgeBase" required>
+  The knowledge base instance this manager belongs to
+</ParamField>
+
+```python
+vm = VariableManager(kb)
+```
+
+## Properties
+
+<ResponseField name="global_manager" type="VariableManagerInternal">
+  Variable manager for global scope (variables not tied to a specific function)
+</ResponseField>
+
+<ResponseField name="function_managers" type="dict[int, VariableManagerInternal]">
+  Dictionary mapping function addresses to their VariableManagerInternal instances
+</ResponseField>
+
+## Accessing Variable Managers
+
+The VariableManager acts as a container for function-specific variable managers:
+
+```python
+# Access global variable manager
+global_vars = kb.variables['global']
+
+# Access function-specific variable manager
+func_addr = 0x401000
+func_vars = kb.variables[func_addr]
+
+# Check if function has variable manager
+if func_addr in kb.variables:
+    print("Function has variables tracked")
+
+# Access via get_manager (same as dict access)
+func_vars = kb.variables.get_manager(func_addr)
+```
+
+## VariableManagerInternal
+
+Each function has its own `VariableManagerInternal` instance that manages variables within that function's scope.
+
+### Properties
+
+<ResponseField name="func_addr" type="int | None">
+  Address of the function this manager belongs to (None for global manager)
+</ResponseField>
+
+<ResponseField name="types" type="TypesStore">
+  Type information store for this function's variables
+</ResponseField>
+
+<ResponseField name="variable_to_types" type="dict[SimVariable, SimType]">
+  Mapping from variables to their types
+</ResponseField>
+
+<ResponseField name="variables_with_manual_types" type="set[SimVariable]">
+  Set of variables with manually-assigned types
+</ResponseField>
+
+## Variable Access
+
+### get_variables
+
+```python
+func_vars.get_variables(
+    sort: Literal['stack', 'reg'] | None = None,
+    collapse_same_ident: bool = False
+) -> list[SimVariable]
+```
+
+Get all variables in the function.
+
+<ParamField path="sort" type="str" default="None">
+  Filter by variable type: `'stack'` for stack variables, `'reg'` for register variables, None for all
+</ParamField>
+
+<ParamField path="collapse_same_ident" type="bool" default="False">
+  Whether to collapse variables with same identifier (not yet implemented)
+</ParamField>
+
+**Returns:** List of variables
+
+```python
+# Get all variables
+all_vars = func_vars.get_variables()
+
+# Get only stack variables
+stack_vars = func_vars.get_variables(sort='stack')
+
+# Get only register variables
+reg_vars = func_vars.get_variables(sort='reg')
+
+for var in stack_vars:
+    print(f"Stack var: {var.name} at offset {var.offset}")
+```
+
+### get_unified_variables
+
+```python
+func_vars.get_unified_variables(
+    sort: Literal['stack', 'reg'] | None = None
+) -> list[SimVariable]
+```
+
+Get unified variables (SSA variables merged into single representations).
+
+<ParamField path="sort" type="str" default="None">
+  Filter by variable type: `'stack'`, `'reg'`, or None for all
+</ParamField>
+
+**Returns:** List of unified variables
+
+```python
+# Get all unified variables
+unified = func_vars.get_unified_variables()
+
+# Get unified stack variables
+unified_stack = func_vars.get_unified_variables(sort='stack')
+
+for var in unified:
+    print(f"{var.name}: {var}")
+```
+
+### get_global_variables
+
+```python
+func_vars.get_global_variables(addr: int) -> set[SimVariable]
+```
+
+Get global variables at a specific address.
+
+<ParamField path="addr" type="int" required>
+  Address of the global variable
+</ParamField>
+
+**Returns:** Set of variables at that address
+
+## Finding Variables
+
+### find_variables_by_insn
+
+```python
+func_vars.find_variables_by_insn(
+    ins_addr: int,
+    sort: Literal['memory', 'register']
+) -> list[tuple[SimVariable, int | None]] | None
+```
+
+Find variables accessed at a specific instruction address.
+
+<ParamField path="ins_addr" type="int" required>
+  Instruction address
+</ParamField>
+
+<ParamField path="sort" type="str" required>
+  Type of variables to find: `'memory'` or `'register'`
+</ParamField>
+
+**Returns:** List of (variable, offset) tuples, or None if no variables found
+
+```python
+# Find memory variables at instruction
+mem_vars = func_vars.find_variables_by_insn(0x401234, 'memory')
+if mem_vars:
+    for var, offset in mem_vars:
+        print(f"{var.name} at offset {offset}")
+
+# Find register variables
+reg_vars = func_vars.find_variables_by_insn(0x401234, 'register')
+```
+
+### find_variables_by_stmt
+
+```python
+func_vars.find_variables_by_stmt(
+    block_addr: int,
+    stmt_idx: int,
+    sort: Literal['memory', 'register', 'constant'],
+    block_idx: int | None = None
+) -> list[tuple[SimVariable, int | None]]
+```
+
+Find variables accessed at a specific statement.
+
+<ParamField path="block_addr" type="int" required>
+  Address of the block containing the statement
+</ParamField>
+
+<ParamField path="stmt_idx" type="int" required>
+  Index of the statement within the block
+</ParamField>
+
+<ParamField path="sort" type="str" required>
+  Type: `'memory'`, `'register'`, or `'constant'`
+</ParamField>
+
+<ParamField path="block_idx" type="int" default="None">
+  Optional block index for blocks with same address
+</ParamField>
+
+**Returns:** List of (variable, offset) tuples
+
+```python
+# Find variables at statement
+vars = func_vars.find_variables_by_stmt(0x401000, 5, 'memory')
+for var, offset in vars:
+    print(f"{var.name} ({offset})")
+```
+
+### find_variables_by_atom
+
+```python
+func_vars.find_variables_by_atom(
+    block_addr: int,
+    stmt_idx: int,
+    atom: ailment.expression.Expression,
+    block_idx: int | None = None
+) -> set[tuple[SimVariable, int | None]]
+```
+
+Find variables represented by a specific AIL atom.
+
+<ParamField path="block_addr" type="int" required>
+  Block address
+</ParamField>
+
+<ParamField path="stmt_idx" type="int" required>
+  Statement index
+</ParamField>
+
+<ParamField path="atom" type="ailment.expression.Expression" required>
+  AIL expression atom to search for
+</ParamField>
+
+<ParamField path="block_idx" type="int" default="None">
+  Optional block index
+</ParamField>
+
+**Returns:** Set of (variable, offset) tuples
+
+### find_variables_by_stack_offset
+
+```python
+func_vars.find_variables_by_stack_offset(offset: int) -> set[SimVariable]
+```
+
+Find all variables at a specific stack offset.
+
+```python
+# Find variables at stack offset -0x10
+vars = func_vars.find_variables_by_stack_offset(-0x10)
+for var in vars:
+    print(f"{var.name}: {var.size} bytes")
+```
+
+### find_variables_by_register
+
+```python
+func_vars.find_variables_by_register(reg: str | int) -> set[SimVariable]
+```
+
+Find all variables stored in a specific register.
+
+<ParamField path="reg" type="str | int" required>
+  Register name (e.g., `'rax'`) or register offset
+</ParamField>
+
+```python
+# Find variables in rax
+vars = func_vars.find_variables_by_register('rax')
+for var in vars:
+    print(f"{var.name} in rax")
+```
+
+## Variable Accesses
+
+### get_variable_accesses
+
+```python
+func_vars.get_variable_accesses(
+    variable: SimVariable,
+    same_name: bool = False
+) -> list[VariableAccess]
+```
+
+Get all accesses (reads/writes) to a variable.
+
+<ParamField path="variable" type="SimVariable" required>
+  The variable to query
+</ParamField>
+
+<ParamField path="same_name" type="bool" default="False">
+  If True, include accesses to all variables with the same name
+</ParamField>
+
+**Returns:** List of VariableAccess objects
+
+```python
+var = stack_vars[0]
+accesses = func_vars.get_variable_accesses(var)
+
+for access in accesses:
+    access_type = 'READ' if access.access_type == VariableAccessSort.READ else 'WRITE'
+    print(f"{access_type} at {hex(access.location.ins_addr)}")
+```
+
+### input_variables
+
+```python
+func_vars.input_variables(exclude_specials: bool = True) -> list[SimVariable]
+```
+
+Get all input variables (variables that are read but never written).
+
+<ParamField path="exclude_specials" type="bool" default="True">
+  Exclude special variables (like stack pointer)
+</ParamField>
+
+**Returns:** List of input variables
+
+```python
+# Find function arguments and external inputs
+inputs = func_vars.input_variables()
+for var in inputs:
+    print(f"Input: {var.name}")
+```
+
+### get_variables_without_writes
+
+```python
+func_vars.get_variables_without_writes() -> list[SimVariable]
+```
+
+Get all variables that have never been written to.
+
+**Returns:** List of variables without write accesses
+
+## Variable Recording
+
+### write_to / read_from / reference_at
+
+```python
+func_vars.write_to(
+    variable: SimVariable,
+    offset: int | None,
+    location: CodeLocation,
+    overwrite: bool = False,
+    atom: ailment.expression.Atom | None = None
+)
+
+func_vars.read_from(
+    variable: SimVariable,
+    offset: int | None,
+    location: CodeLocation,
+    overwrite: bool = False,
+    atom: ailment.expression.Atom | None = None
+)
+
+func_vars.reference_at(
+    variable: SimVariable,
+    offset: int | None,
+    location: CodeLocation,
+    overwrite: bool = False,
+    atom: ailment.expression.Atom | None = None
+)
+```
+
+Record variable accesses. These are typically used internally by analyses.
+
+<ParamField path="variable" type="SimVariable" required>
+  Variable being accessed
+</ParamField>
+
+<ParamField path="offset" type="int | None" required>
+  Offset within the variable
+</ParamField>
+
+<ParamField path="location" type="CodeLocation" required>
+  Location of the access
+</ParamField>
+
+<ParamField path="overwrite" type="bool" default="False">
+  Replace existing accesses at this location
+</ParamField>
+
+<ParamField path="atom" type="ailment.expression.Atom" default="None">
+  AIL atom representing this access
+</ParamField>
+
+## Type Management
+
+### set_variable_type
+
+```python
+func_vars.set_variable_type(
+    var: SimVariable,
+    ty: SimType,
+    name: str | None = None,
+    override_bot: bool = True,
+    all_unified: bool = False,
+    mark_manual: bool = False
+) -> None
+```
+
+Set the type of a variable.
+
+<ParamField path="var" type="SimVariable" required>
+  Variable to set type for
+</ParamField>
+
+<ParamField path="ty" type="SimType" required>
+  Type to assign
+</ParamField>
+
+<ParamField path="name" type="str" default="None">
+  Optional type name for named types
+</ParamField>
+
+<ParamField path="override_bot" type="bool" default="True">
+  Replace bottom types with default integer types
+</ParamField>
+
+<ParamField path="all_unified" type="bool" default="False">
+  Apply type to all unified variables
+</ParamField>
+
+<ParamField path="mark_manual" type="bool" default="False">
+  Mark as manually set (won't be overridden by analysis)
+</ParamField>
+
+```python
+from angr.sim_type import SimTypeInt, SimTypePointer
+
+# Set variable type to int
+var = stack_vars[0]
+func_vars.set_variable_type(var, SimTypeInt())
+
+# Set pointer type
+ptr_type = SimTypePointer(SimTypeInt())
+func_vars.set_variable_type(var, ptr_type, mark_manual=True)
+
+# Apply to all unified variables
+func_vars.set_variable_type(var, SimTypeInt(), all_unified=True)
+```
+
+### get_variable_type
+
+```python
+func_vars.get_variable_type(var: SimVariable) -> SimType | None
+```
+
+Get the type of a variable.
+
+**Returns:** SimType instance or None if no type is set
+
+```python
+var_type = func_vars.get_variable_type(var)
+if var_type:
+    print(f"{var.name} has type: {var_type}")
+```
+
+### remove_types
+
+```python
+func_vars.remove_types() -> None
+```
+
+Clear all type information.
+
+## Phi Variables
+
+Phi variables represent merged SSA variables at control flow join points.
+
+### make_phi_node
+
+```python
+func_vars.make_phi_node(
+    block_addr: int,
+    *variables: SimVariable
+) -> SimVariable
+```
+
+Create or get a phi variable for the given variables at a block.
+
+<ParamField path="block_addr" type="int" required>
+  Address of the block where phi occurs
+</ParamField>
+
+<ParamField path="variables" type="SimVariable" required>
+  Variables to merge
+</ParamField>
+
+**Returns:** The phi variable
+
+### is_phi_variable
+
+```python
+func_vars.is_phi_variable(var: SimVariable) -> bool
+```
+
+Check if a variable is a phi variable.
+
+### get_phi_subvariables
+
+```python
+func_vars.get_phi_subvariables(var: SimVariable) -> set[SimVariable]
+```
+
+Get the sub-variables that a phi variable represents.
+
+```python
+if func_vars.is_phi_variable(var):
+    subvars = func_vars.get_phi_subvariables(var)
+    print(f"Phi variable {var.name} merges:")
+    for subvar in subvars:
+        print(f"  - {subvar.name}")
+```
+
+### get_phi_variables
+
+```python
+func_vars.get_phi_variables(block_addr: int) -> dict[SimVariable, set[SimVariable]]
+```
+
+Get all phi variables at a block.
+
+<ParamField path="block_addr" type="int" required>
+  Block address
+</ParamField>
+
+**Returns:** Dictionary mapping phi variables to their sub-variables
+
+## Variable Unification
+
+### unify_variables
+
+```python
+func_vars.unify_variables(
+    interference: networkx.Graph[int] | None = None
+) -> None
+```
+
+Unify SSA variables into single representations based on phi nodes and interference.
+
+<ParamField path="interference" type="networkx.Graph[int]" default="None">
+  Variable interference graph
+</ParamField>
+
+### unified_variable
+
+```python
+func_vars.unified_variable(variable: SimVariable) -> SimVariable | None
+```
+
+Get the unified variable for an SSA variable.
+
+```python
+ssa_var = stack_vars[0]
+unified = func_vars.unified_variable(ssa_var)
+if unified:
+    print(f"{ssa_var.name} unifies to {unified.name}")
+```
+
+### set_unified_variable
+
+```python
+func_vars.set_unified_variable(
+    variable: SimVariable,
+    unified: SimVariable
+) -> None
+```
+
+Manually set the unified variable for an SSA variable.
+
+## Variable Naming
+
+### assign_variable_names
+
+```python
+func_vars.assign_variable_names(
+    labels: dict | None = None,
+    types: list[type] | None = None
+) -> None
+```
+
+Assign default names to all variables.
+
+<ParamField path="labels" type="dict" default="None">
+  Known labels in the binary
+</ParamField>
+
+<ParamField path="types" type="list[type]" default="None">
+  Variable types to name (None for all)
+</ParamField>
+
+```python
+# Assign default names to all variables
+func_vars.assign_variable_names()
+
+# Only assign names to stack variables
+from angr.sim_variable import SimStackVariable
+func_vars.assign_variable_names(types=[SimStackVariable])
+```
+
+### assign_unified_variable_names
+
+```python
+func_vars.assign_unified_variable_names(
+    labels: dict | None = None,
+    arg_names: list[str] | None = None,
+    reset: bool = False,
+    func_blocks: list[ailment.Block] | None = None
+) -> None
+```
+
+Assign names to unified variables.
+
+<ParamField path="labels" type="dict" default="None">
+  Known labels
+</ParamField>
+
+<ParamField path="arg_names" type="list[str]" default="None">
+  Argument names to use
+</ParamField>
+
+<ParamField path="reset" type="bool" default="False">
+  Reset existing names
+</ParamField>
+
+<ParamField path="func_blocks" type="list[ailment.Block]" default="None">
+  Function blocks for optimization
+</ParamField>
+
+```python
+# Assign names with custom argument names
+func_vars.assign_unified_variable_names(
+    arg_names=['argc', 'argv', 'envp']
+)
+```
+
+## Usage Examples
+
+### Basic Variable Analysis
+
+```python
+# Get function variable manager
+func = kb.functions[0x401000]
+var_mgr = kb.variables[func.addr]
+
+# Analyze stack variables
+stack_vars = var_mgr.get_variables(sort='stack')
+print(f"Found {len(stack_vars)} stack variables")
+
+for var in stack_vars:
+    accesses = var_mgr.get_variable_accesses(var)
+    reads = sum(1 for a in accesses if a.access_type == VariableAccessSort.READ)
+    writes = sum(1 for a in accesses if a.access_type == VariableAccessSort.WRITE)
+    print(f"{var.name}: {reads} reads, {writes} writes")
+```
+
+### Type Assignment
+
+```python
+from angr.sim_type import SimTypeInt, SimTypePointer, SimTypeChar
+
+var_mgr = kb.variables[0x401000]
+
+# Assign types to arguments
+args = [v for v in var_mgr.get_variables() if v.ident.startswith('arg_')]
+if len(args) >= 2:
+    # argc: int
+    var_mgr.set_variable_type(args[0], SimTypeInt(), mark_manual=True)
+    # argv: char**
+    var_mgr.set_variable_type(
+        args[1],
+        SimTypePointer(SimTypePointer(SimTypeChar())),
+        mark_manual=True
+    )
+```
+
+### Finding Function Inputs
+
+```python
+func_addr = 0x401000
+var_mgr = kb.variables[func_addr]
+
+# Get input variables (likely function arguments)
+input_vars = var_mgr.input_variables()
+
+print(f"Function {hex(func_addr)} has {len(input_vars)} inputs:")
+for var in input_vars:
+    var_type = var_mgr.get_variable_type(var)
+    type_str = str(var_type) if var_type else 'unknown'
+    print(f"  {var.name} ({type_str})")
+```
+
+## VariableType Constants
+
+```python
+class VariableType:
+    REGISTER = 0
+    MEMORY = 1
+```
+
+These constants are used in some methods for filtering variable types.

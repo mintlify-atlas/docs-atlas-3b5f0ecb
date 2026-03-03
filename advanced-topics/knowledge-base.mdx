@@ -1,0 +1,642 @@
+---
+title: Knowledge Base
+description: Persistent analysis results and knowledge storage
+---
+
+The Knowledge Base (KB) is angr's centralized storage for analysis results. It maintains information about functions, CFGs, variables, types, and cross-references that persist across analysis runs.
+
+## Overview
+
+The Knowledge Base stores high-level information discovered during analysis:
+
+- **Functions**: Identified functions with metadata
+- **CFGs**: Control-flow graphs
+- **Variables**: Stack and global variables
+- **Types**: Type information and structures
+- **Cross-references**: Code and data references
+- **Decompilations**: Decompiled code
+
+## Accessing the Knowledge Base
+
+The KB is available through the project (angr/knowledge_base.py:33):
+
+```python
+import angr
+
+project = angr.Project('/bin/ls')
+
+# Access knowledge base
+kb = project.kb
+
+# KB is automatically populated by analyses
+cfg = project.analyses.CFGFast()
+
+# Now KB contains discovered functions
+for func in kb.functions.values():
+    print(f"Function: {func.name} at {func.addr:#x}")
+```
+
+## Knowledge Base Plugins
+
+### Functions Manager
+
+Manages all discovered functions:
+
+```python
+# Access functions
+kb.functions  # FunctionManager instance
+
+# Get function by address
+func = kb.functions[0x401000]
+print(f"Name: {func.name}")
+print(f"Size: {func.size} bytes")
+print(f"Blocks: {len(func.blocks)}")
+
+# Get function by name
+main = kb.functions['main']
+
+# Iterate all functions
+for addr, func in kb.functions.items():
+    print(f"{func.name} @ {addr:#x}")
+
+# Function properties
+func.is_simprocedure  # Is it a hooked SimProcedure?
+func.is_plt           # Is it a PLT stub?
+func.returning        # Does it return?
+func.bp_on_stack      # Uses base pointer?
+```
+
+### Function Analysis
+
+```python
+# Get function blocks
+for block in func.blocks:
+    print(f"Block: {block.addr:#x} size={block.size}")
+
+# Get function graph
+func_graph = func.graph
+for node in func_graph.nodes():
+    print(f"Node: {node}")
+
+# Calling convention
+if func.calling_convention:
+    print(f"CC: {func.calling_convention}")
+
+# Function arguments
+if func.prototype:
+    print(f"Prototype: {func.prototype}")
+
+# Callsites
+for callsite in func.get_call_sites():
+    print(f"Calls from: {callsite:#x}")
+
+# Called by
+for caller in func.callers:
+    print(f"Called by: {caller:#x}")
+```
+
+## CFG Management
+
+Store and access control-flow graphs:
+
+```python
+# Generate CFG
+cfg = project.analyses.CFGFast()
+
+# CFG is automatically stored in KB
+kb.cfgs  # CFGManager instance
+
+# Access stored CFG
+stored_cfg = kb.cfgs['CFGFast']
+
+# CFG operations
+node = cfg.model.get_any_node(0x401000)
+if node:
+    print(f"Address: {node.addr:#x}")
+    print(f"Size: {node.size}")
+    
+    # Predecessors
+    for pred in node.predecessors:
+        print(f"From: {pred.addr:#x}")
+    
+    # Successors
+    for succ in node.successors:
+        print(f"To: {succ.addr:#x}")
+```
+
+## Variables
+
+Track function variables:
+
+```python
+# Variable manager
+kb.variables  # VariableManager instance
+
+# Get variables for a function
+variable_mgr = kb.variables[func.addr]
+
+# Access variables
+for var in variable_mgr.variables:
+    print(f"Variable: {var.name}")
+    print(f"  Type: {var.type}")
+    print(f"  Location: {var.loc}")
+
+# Find variable by location
+stack_var = variable_mgr.find_variable(func.addr, 'stack', -0x10)
+if stack_var:
+    print(f"Stack variable: {stack_var.name}")
+```
+
+## Type Information
+
+Store and retrieve type information:
+
+```python
+# Types store
+kb.types  # TypesStore instance
+
+# Register type
+from angr.sim_type import SimTypeInt, SimStruct
+
+my_struct = SimStruct({
+    'field1': SimTypeInt(),
+    'field2': SimTypeInt(),
+}, name='MyStruct')
+
+kb.types['MyStruct'] = my_struct
+
+# Retrieve type
+struct_type = kb.types['MyStruct']
+
+# Check if type exists
+if 'MyStruct' in kb.types:
+    print("Type registered")
+```
+
+## Cross-References (XRefs)
+
+Track code and data references:
+
+```python
+# XRef manager  
+kb.xrefs  # XRefManager instance
+
+# Get references TO an address
+xrefs_to = kb.xrefs.get_xrefs_by_dst(0x401000)
+for xref in xrefs_to:
+    print(f"Reference from {xref.src:#x} -> {xref.dst:#x}")
+    print(f"  Type: {xref.type}")  # code, data, etc.
+
+# Get references FROM an address  
+xrefs_from = kb.xrefs.get_xrefs_by_src(0x401000)
+for xref in xrefs_from:
+    print(f"References {xref.dst:#x}")
+```
+
+## Custom Knowledge Base Plugins
+
+### Creating a Plugin
+
+```python
+from angr.knowledge_plugins import KnowledgeBasePlugin
+
+class VulnerabilityDB(KnowledgeBasePlugin):
+    """Track discovered vulnerabilities"""
+    
+    def __init__(self, kb):
+        super().__init__(kb)
+        self.vulnerabilities = []
+    
+    def add_vulnerability(self, vuln_type, addr, description):
+        """Record a vulnerability"""
+        self.vulnerabilities.append({
+            'type': vuln_type,
+            'addr': addr,
+            'description': description,
+            'function': self._kb.functions.floor_func(addr)
+        })
+    
+    def get_by_type(self, vuln_type):
+        """Get vulnerabilities of specific type"""
+        return [v for v in self.vulnerabilities 
+                if v['type'] == vuln_type]
+    
+    def get_by_function(self, func_addr):
+        """Get vulnerabilities in a function"""
+        return [v for v in self.vulnerabilities
+                if v['function'] and v['function'].addr == func_addr]
+    
+    def copy(self):
+        """Create a copy of this plugin"""
+        c = VulnerabilityDB(self._kb)
+        c.vulnerabilities = list(self.vulnerabilities)
+        return c
+
+# Register plugin
+kb.register_plugin('vulnerabilities', VulnerabilityDB(kb))
+
+# Use plugin
+kb.vulnerabilities.add_vulnerability(
+    'buffer_overflow',
+    0x401234,
+    'Unchecked strcpy'
+)
+
+# Query vulnerabilities
+for vuln in kb.vulnerabilities.get_by_type('buffer_overflow'):
+    func = vuln['function']
+    print(f"[VULN] {vuln['type']} at {vuln['addr']:#x}")
+    if func:
+        print(f"  In function: {func.name}")
+    print(f"  {vuln['description']}")
+```
+
+### Advanced Plugin: Code Coverage Tracker
+
+```python
+from angr.knowledge_plugins import KnowledgeBasePlugin
+import networkx as nx
+
+class CoverageTracker(KnowledgeBasePlugin):
+    """Track code coverage across analyses"""
+    
+    def __init__(self, kb):
+        super().__init__(kb)
+        self.covered_blocks = set()
+        self.covered_edges = set()
+        self.coverage_by_function = {}
+        self.exec_counts = {}  # Block -> execution count
+    
+    def record_execution(self, state):
+        """Record execution from a state's history"""
+        # Get executed blocks
+        for addr in state.history.bbl_addrs:
+            self.covered_blocks.add(addr)
+            self.exec_counts[addr] = self.exec_counts.get(addr, 0) + 1
+        
+        # Get edges
+        sources = state.history.bbl_addrs[:-1]
+        targets = state.history.bbl_addrs[1:]
+        for src, dst in zip(sources, targets):
+            self.covered_edges.add((src, dst))
+    
+    def update_function_coverage(self):
+        """Calculate coverage per function"""
+        for func_addr, func in self._kb.functions.items():
+            func_blocks = set(block.addr for block in func.blocks)
+            covered = func_blocks & self.covered_blocks
+            
+            if func_blocks:
+                coverage_pct = len(covered) / len(func_blocks) * 100
+            else:
+                coverage_pct = 0.0
+            
+            self.coverage_by_function[func_addr] = {
+                'name': func.name,
+                'total_blocks': len(func_blocks),
+                'covered_blocks': len(covered),
+                'coverage_pct': coverage_pct,
+                'uncovered': func_blocks - covered
+            }
+    
+    def get_coverage_report(self):
+        """Generate coverage report"""
+        self.update_function_coverage()
+        
+        total_blocks = len(self.covered_blocks)
+        total_edges = len(self.covered_edges)
+        
+        report = {
+            'total_blocks_covered': total_blocks,
+            'total_edges_covered': total_edges,
+            'functions': []
+        }
+        
+        for func_addr, coverage in sorted(
+            self.coverage_by_function.items(),
+            key=lambda x: x[1]['coverage_pct'],
+            reverse=True
+        ):
+            report['functions'].append({
+                'addr': func_addr,
+                'name': coverage['name'],
+                'coverage': f"{coverage['coverage_pct']:.1f}%",
+                'blocks': f"{coverage['covered_blocks']}/{coverage['total_blocks']}"
+            })
+        
+        return report
+    
+    def get_hot_blocks(self, n=10):
+        """Get most frequently executed blocks"""
+        return sorted(
+            self.exec_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:n]
+    
+    def copy(self):
+        c = CoverageTracker(self._kb)
+        c.covered_blocks = set(self.covered_blocks)
+        c.covered_edges = set(self.covered_edges)
+        c.coverage_by_function = dict(self.coverage_by_function)
+        c.exec_counts = dict(self.exec_counts)
+        return c
+
+# Usage
+kb.register_plugin('coverage', CoverageTracker(kb))
+
+# Run symbolic execution
+simgr = project.factory.simulation_manager()
+simgr.run()
+
+# Record coverage
+for state in simgr.deadended + simgr.active:
+    kb.coverage.record_execution(state)
+
+# Generate report
+report = kb.coverage.get_coverage_report()
+print(f"Total coverage: {report['total_blocks_covered']} blocks")
+
+for func_info in report['functions'][:10]:
+    print(f"{func_info['name']:30} {func_info['coverage']:>6} ({func_info['blocks']})")
+
+# Hot blocks
+print("\nMost executed blocks:")
+for addr, count in kb.coverage.get_hot_blocks():
+    func = kb.functions.floor_func(addr)
+    print(f"{addr:#x} in {func.name if func else 'unknown'}: {count} times")
+```
+
+## Decompilations
+
+Store and access decompiled code:
+
+```python
+# Decompile a function
+decomp = project.analyses.Decompiler(func)
+
+# Decompilation is stored in KB
+kb.decompilations  # StructuredCodeManager
+
+# Access stored decompilation
+stored_decomp = kb.structured_code.get(func.addr)
+if stored_decomp:
+    print(stored_decomp.text)  # Decompiled C code
+```
+
+## Key Definitions
+
+Store reaching definitions and use-def information:
+
+```python
+# Reaching definitions analysis
+rda = project.analyses.ReachingDefinitions(func)
+
+# Definitions stored in KB
+kb.defs  # KeyDefinitionManager
+
+# Access definitions
+for def_addr, defs in kb.defs[func.addr].items():
+    print(f"Definitions at {def_addr:#x}: {defs}")
+```
+
+## Practical Example: Security Auditor
+
+```python
+import angr
+from angr.knowledge_plugins import KnowledgeBasePlugin
+
+class SecurityAuditor(KnowledgeBasePlugin):
+    """Comprehensive security analysis storage"""
+    
+    def __init__(self, kb):
+        super().__init__(kb)
+        self.issues = []
+        self.dangerous_functions = {
+            'strcpy': 'unbounded copy',
+            'gets': 'no length check',
+            'sprintf': 'unbounded format',
+            'scanf': 'format string risk'
+        }
+    
+    def analyze_project(self, project):
+        """Run comprehensive security analysis"""
+        # Check for dangerous function calls
+        self._check_dangerous_calls()
+        
+        # Check for missing security features
+        self._check_security_features(project)
+        
+        # Analyze data flows
+        self._analyze_data_flows()
+    
+    def _check_dangerous_calls(self):
+        """Find calls to dangerous functions"""
+        for func_name in self.dangerous_functions:
+            if func_name in self._kb.functions:
+                func = self._kb.functions[func_name]
+                
+                # Find all callsites
+                for caller_addr in func.callers:
+                    self.issues.append({
+                        'severity': 'HIGH',
+                        'type': 'dangerous_function',
+                        'function': func_name,
+                        'location': caller_addr,
+                        'description': f"Call to {func_name}: {self.dangerous_functions[func_name]}"
+                    })
+    
+    def _check_security_features(self, project):
+        """Check for security mitigations"""
+        # Check for stack canaries
+        has_canary = any(
+            '__stack_chk_fail' in project.loader.main_object.symbols_by_name
+        )
+        
+        if not has_canary:
+            self.issues.append({
+                'severity': 'MEDIUM',
+                'type': 'missing_mitigation',
+                'description': 'Binary compiled without stack canaries'
+            })
+        
+        # Check for PIE
+        is_pie = project.loader.main_object.pic
+        if not is_pie:
+            self.issues.append({
+                'severity': 'MEDIUM',
+                'type': 'missing_mitigation',
+                'description': 'Binary not position independent'
+            })
+        
+        # Check for NX
+        has_nx = not any(
+            seg.is_executable and seg.is_writable
+            for seg in project.loader.main_object.segments
+        )
+        
+        if not has_nx:
+            self.issues.append({
+                'severity': 'HIGH',
+                'type': 'missing_mitigation',
+                'description': 'Writable and executable memory segments'
+            })
+    
+    def _analyze_data_flows(self):
+        """Analyze data flows for taint propagation"""
+        # Find user input sources
+        input_functions = {'read', 'fread', 'scanf', 'gets'}
+        
+        for func_name in input_functions:
+            if func_name not in self._kb.functions:
+                continue
+            
+            input_func = self._kb.functions[func_name]
+            
+            # For each caller
+            for caller_addr in input_func.callers:
+                caller_func = self._kb.functions.floor_func(caller_addr)
+                
+                if not caller_func:
+                    continue
+                
+                # Check if input is used in dangerous ways
+                for dangerous in self.dangerous_functions:
+                    if dangerous in [f.name for f in caller_func.functions_called()]:
+                        self.issues.append({
+                            'severity': 'CRITICAL',
+                            'type': 'taint_flow',
+                            'description': f'User input from {func_name} may flow to {dangerous}',
+                            'source': func_name,
+                            'sink': dangerous,
+                            'function': caller_func.name
+                        })
+    
+    def get_report(self):
+        """Generate security report"""
+        severity_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+        
+        sorted_issues = sorted(
+            self.issues,
+            key=lambda x: severity_order.get(x['severity'], 4)
+        )
+        
+        report = {
+            'total_issues': len(self.issues),
+            'by_severity': {},
+            'issues': sorted_issues
+        }
+        
+        for issue in self.issues:
+            severity = issue['severity']
+            report['by_severity'][severity] = report['by_severity'].get(severity, 0) + 1
+        
+        return report
+    
+    def copy(self):
+        c = SecurityAuditor(self._kb)
+        c.issues = list(self.issues)
+        return c
+
+# Usage
+project = angr.Project('/path/to/binary')
+project.analyses.CFGFast()
+
+# Register and run auditor
+kb.register_plugin('security', SecurityAuditor(kb))
+kb.security.analyze_project(project)
+
+# Generate report
+report = kb.security.get_report()
+print(f"Security Analysis Report")
+print(f"Total issues: {report['total_issues']}")
+print(f"\nBy severity:")
+for severity, count in sorted(report['by_severity'].items()):
+    print(f"  {severity}: {count}")
+
+print(f"\nIssues:")
+for issue in report['issues']:
+    print(f"[{issue['severity']}] {issue['description']}")
+    if 'location' in issue:
+        func = kb.functions.floor_func(issue['location'])
+        if func:
+            print(f"  in {func.name} at {issue['location']:#x}")
+```
+
+## Best Practices
+
+<Steps>
+
+### Use KB for Persistent Data
+
+Store analysis results that should persist across analyses:
+
+```python
+# Good: Store in KB
+kb.my_plugin.add_result(data)
+
+# Bad: Store in local variable (lost after analysis)
+results = []
+```
+
+### Access Functions Through KB
+
+Always use KB to access function information:
+
+```python
+# Preferred
+func = kb.functions[addr]
+
+# Also works but less direct
+func = cfg.functions[addr]
+```
+
+### Register Custom Plugins
+
+Extend KB with domain-specific knowledge:
+
+```python
+class MyAnalysisPlugin(KnowledgeBasePlugin):
+    def __init__(self, kb):
+        super().__init__(kb)
+        self.results = {}
+
+kb.register_plugin('my_analysis', MyAnalysisPlugin(kb))
+```
+
+### Implement copy() for Plugins
+
+Always implement copy() to allow KB duplication:
+
+```python
+def copy(self):
+    c = MyPlugin(self._kb)
+    c.data = dict(self.data)
+    return c
+```
+
+</Steps>
+
+## Reference
+
+### Knowledge Base Attributes
+
+| Attribute | Type | Purpose |
+|-----------|------|----------|
+| `kb.functions` | FunctionManager | Function database |
+| `kb.cfgs` | CFGManager | Stored CFGs |
+| `kb.variables` | VariableManager | Variable information |
+| `kb.types` | TypesStore | Type information |
+| `kb.xrefs` | XRefManager | Cross-references |
+| `kb.decompilations` | StructuredCodeManager | Decompiled code |
+| `kb.defs` | KeyDefinitionManager | Reaching definitions |
+| `kb.callgraph` | NetworkX DiGraph | Call graph |
+
+### Plugin Interface
+
+```python
+class KnowledgeBasePlugin:
+    def __init__(self, kb: KnowledgeBase)
+    def copy(self) -> KnowledgeBasePlugin
+    def set_kb(self, kb: KnowledgeBase) -> None
+```

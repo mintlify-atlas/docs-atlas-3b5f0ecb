@@ -1,0 +1,459 @@
+---
+title: Functions Plugin
+description: FunctionManager API reference for managing functions in angr
+---
+
+The `FunctionManager` plugin manages all functions discovered in a binary, providing access to function metadata, call graphs, and function relationships.
+
+## FunctionManager Class
+
+```python
+class FunctionManager(KnowledgeBasePlugin, collections.abc.Mapping[K, Function]):
+    """Manages functions with optional LRU caching and LMDB spilling."""
+```
+
+### Constructor
+
+<ParamField path="kb" type="KnowledgeBase" required>
+  The knowledge base instance this manager belongs to
+</ParamField>
+
+<ParamField path="cache_limit" type="int | None" default="None">
+  Maximum number of functions to keep in memory. None means unlimited (no eviction). When set, uses SpillingFunctionDict with LRU caching.
+</ParamField>
+
+```python
+# Unlimited functions in memory
+fm = FunctionManager(kb)
+
+# Limit to 1000 functions in memory
+fm = FunctionManager(kb, cache_limit=1000)
+```
+
+## Properties
+
+<ResponseField name="callgraph" type="networkx.MultiDiGraph[int]">
+  The call graph of all functions. Nodes are function addresses, edges represent calls between functions.
+</ResponseField>
+
+<ResponseField name="function_address_types" type="type">
+  The valid types for function addresses (e.g., int or SootMethodDescriptor)
+</ResponseField>
+
+<ResponseField name="address_types" type="type">
+  The valid types for addresses in this architecture
+</ResponseField>
+
+## Accessing Functions
+
+### Dictionary-Style Access
+
+FunctionManager implements the Mapping protocol, so you can use it like a dictionary:
+
+```python
+# Access by address
+func = kb.functions[0x401000]
+
+# Access by name
+func = kb.functions['main']
+
+# Check if function exists
+if 0x401000 in kb.functions:
+    print("Function exists")
+
+# Get number of functions
+num_funcs = len(kb.functions)
+
+# Iterate over all functions
+for addr in kb.functions:
+    func = kb.functions[addr]
+    print(f"{hex(addr)}: {func.name}")
+
+# Iterate over address, function pairs
+for addr, func in kb.functions.items():
+    print(f"{hex(addr)}: {func.name}")
+```
+
+### function
+
+```python
+kb.functions.function(
+    addr: int | None = None,
+    name: str | None = None,
+    check_previous_names: bool = False,
+    create: bool = False,
+    syscall: bool = False,
+    plt: bool | None = None
+) -> Function | None
+```
+
+Get a function by address or name.
+
+<ParamField path="addr" type="int" default="None">
+  Address of the function
+</ParamField>
+
+<ParamField path="name" type="str" default="None">
+  Name of the function. Supports special syntax like `sub_401000` for addresses.
+</ParamField>
+
+<ParamField path="check_previous_names" type="bool" default="False">
+  Also search in previous names (for renamed functions)
+</ParamField>
+
+<ParamField path="create" type="bool" default="False">
+  Create the function if it doesn't exist
+</ParamField>
+
+<ParamField path="syscall" type="bool" default="False">
+  Mark as syscall if creating a new function
+</ParamField>
+
+<ParamField path="plt" type="bool | None" default="None">
+  Filter by PLT status: True for PLT stubs, False for non-PLT, None for any
+</ParamField>
+
+**Returns:** Function instance or None if not found
+
+```python
+# Get function by address
+func = kb.functions.function(addr=0x401000)
+
+# Get or create function
+func = kb.functions.function(addr=0x401000, create=True)
+
+# Get function by name
+main = kb.functions.function(name='main')
+
+# Filter PLT functions
+plt_func = kb.functions.function(addr=0x401000, plt=True)
+```
+
+### get_by_addr
+
+```python
+kb.functions.get_by_addr(addr: int, meta_only: bool = False) -> Function
+```
+
+Get a function by address.
+
+<ParamField path="addr" type="int" required>
+  Address of the function
+</ParamField>
+
+<ParamField path="meta_only" type="bool" default="False">
+  If True, return a lightweight meta-only Function (when using spilling). Meta-only functions contain basic information but not full graph data.
+</ParamField>
+
+**Returns:** Function instance
+
+**Raises:** `KeyError` if function doesn't exist
+
+### get_by_name
+
+```python
+kb.functions.get_by_name(
+    name: str,
+    check_previous_names: bool = False
+) -> Generator[Function]
+```
+
+Get all functions with the given name (yields multiple functions if name is not unique).
+
+<ParamField path="name" type="str" required>
+  Name of the function to search for
+</ParamField>
+
+<ParamField path="check_previous_names" type="bool" default="False">
+  Also search previous names of renamed functions
+</ParamField>
+
+**Returns:** Generator yielding Function instances
+
+```python
+# Get all functions named 'helper'
+for func in kb.functions.get_by_name('helper'):
+    print(f"Found helper at {hex(func.addr)}")
+
+# Include previous names in search
+for func in kb.functions.get_by_name('old_name', check_previous_names=True):
+    print(f"Function was previously named 'old_name': {func.name}")
+```
+
+### get_addrs_by_name
+
+```python
+kb.functions.get_addrs_by_name(
+    name: str,
+    check_previous_names: bool = False
+) -> set[int]
+```
+
+Get addresses of all functions with the given name.
+
+<ParamField path="name" type="str" required>
+  Name of the function
+</ParamField>
+
+<ParamField path="check_previous_names" type="bool" default="False">
+  Include previous names in search
+</ParamField>
+
+**Returns:** Set of function addresses
+
+## Querying Functions
+
+### contains_addr
+
+```python
+kb.functions.contains_addr(addr: int) -> bool
+```
+
+Check if an address is managed by the function manager.
+
+### query
+
+```python
+kb.functions.query(query: str, check_previous_names: bool = False) -> Function | None
+```
+
+Query for a function using selectors. Supported formats:
+- `::<name>` - Function in the main object
+- `::<addr>::<name>` - Function at specific address
+- `::<obj>::<name>` - Function in specific object
+
+<ParamField path="query" type="str" required>
+  Query string with selector syntax
+</ParamField>
+
+<ParamField path="check_previous_names" type="bool" default="False">
+  Search previous names
+</ParamField>
+
+**Returns:** Function instance or None
+
+```python
+# Query by name in main object
+func = kb.functions.query('::main')
+
+# Query by address and name
+func = kb.functions.query('::0x401000::main')
+
+# Query by object and name
+func = kb.functions.query('::libc.so::malloc')
+```
+
+### Floor and Ceiling Functions
+
+```python
+kb.functions.floor_addr(addr: int) -> int | None
+kb.functions.floor_func(addr: int) -> Function | None
+kb.functions.ceiling_addr(addr: int) -> int | None
+kb.functions.ceiling_func(addr: int) -> Function | None
+```
+
+<Accordion title="floor_addr / floor_func">
+  Returns the function with the greatest address ≤ `addr`.
+  
+  ```python
+  # Find function at or before address
+  addr = kb.functions.floor_addr(0x401234)
+  if addr:
+      func = kb.functions[addr]
+  ```
+</Accordion>
+
+<Accordion title="ceiling_addr / ceiling_func">
+  Returns the function with the smallest address ≥ `addr`.
+  
+  ```python
+  # Find function at or after address
+  addr = kb.functions.ceiling_addr(0x401234)
+  if addr:
+      func = kb.functions[addr]
+  ```
+</Accordion>
+
+## Iterating Functions
+
+### items
+
+```python
+kb.functions.items(meta_only: bool = False) -> Generator[tuple[int, Function]]
+```
+
+Iterate over (address, function) pairs.
+
+<ParamField path="meta_only" type="bool" default="False">
+  Yield meta-only functions (lightweight versions)
+</ParamField>
+
+### values
+
+```python
+kb.functions.values(meta_only: bool = False) -> Generator[Function]
+```
+
+Iterate over all functions.
+
+```python
+# Iterate all functions
+for func in kb.functions.values():
+    print(f"{func.name}: {func.size} bytes")
+
+# Iterate meta-only (faster for large binaries)
+for func in kb.functions.values(meta_only=True):
+    print(func.name)  # Can access basic properties only
+```
+
+## Modifying Functions
+
+### Adding Functions
+
+```python
+# Create new function
+kb.functions[0x401000] = Function(kb.functions, 0x401000, name='my_func')
+
+# Or use function() with create=True
+func = kb.functions.function(addr=0x401000, create=True)
+```
+
+### Deleting Functions
+
+```python
+# Delete by address
+del kb.functions[0x401000]
+```
+
+### function_name_changed
+
+```python
+kb.functions.function_name_changed(
+    addr: int,
+    old_name: str | None,
+    new_name: str
+) -> None
+```
+
+Notify the manager that a function's name has changed (internal use).
+
+## Call Graph Operations
+
+The `callgraph` property provides access to the function call graph:
+
+```python
+import networkx as nx
+
+# Get all callers of a function
+callers = list(kb.functions.callgraph.predecessors(0x401000))
+
+# Get all callees
+callees = list(kb.functions.callgraph.successors(0x401000))
+
+# Check if function A calls function B
+if kb.functions.callgraph.has_edge(0x401000, 0x402000):
+    print("Function 0x401000 calls 0x402000")
+
+# Get edge data
+for src, dst, data in kb.functions.callgraph.edges(data=True):
+    edge_type = data.get('type', 'call')
+    print(f"{hex(src)} -> {hex(dst)} ({edge_type})")
+```
+
+## Memory Management (Spilling)
+
+When `cache_limit` is set, FunctionManager uses `SpillingFunctionDict` to manage memory:
+
+### Cache Properties
+
+```python
+if hasattr(kb.functions._function_map, 'cache_limit'):
+    fm = kb.functions._function_map
+    print(f"Cache limit: {fm.cache_limit}")
+    print(f"Cached count: {fm.cached_count}")
+    print(f"Spilled count: {fm.spilled_count}")
+    print(f"Total count: {fm.total_count}")
+```
+
+<ResponseField name="cache_limit" type="int">
+  Maximum functions in memory
+</ResponseField>
+
+<ResponseField name="cached_count" type="int">
+  Number of functions currently in memory
+</ResponseField>
+
+<ResponseField name="spilled_count" type="int">
+  Number of functions spilled to LMDB
+</ResponseField>
+
+<ResponseField name="total_count" type="int">
+  Total functions (cached + spilled)
+</ResponseField>
+
+### Manual Cache Control
+
+```python
+fm = kb.functions._function_map
+
+# Load all spilled functions
+fm.load_all_spilled()
+
+# Evict all cached functions
+fm.evict_all_cached()
+
+# Adjust cache limit
+fm.cache_limit = 2000
+```
+
+## Usage Examples
+
+### Finding Functions
+
+```python
+# Find all non-returning functions
+for func in kb.functions.values():
+    if func.returning is False:
+        print(f"Non-returning: {func.name} at {hex(func.addr)}")
+
+# Find all PLT functions
+for addr, func in kb.functions.items():
+    if func.is_plt:
+        print(f"PLT: {func.name}")
+```
+
+### Call Graph Analysis
+
+```python
+import networkx as nx
+
+# Find leaf functions (no callees)
+leaves = [n for n in kb.functions.callgraph.nodes() 
+          if kb.functions.callgraph.out_degree(n) == 0]
+
+# Find functions with most callers
+callers_count = [(n, kb.functions.callgraph.in_degree(n)) 
+                 for n in kb.functions.callgraph.nodes()]
+most_called = max(callers_count, key=lambda x: x[1])
+print(f"Most called: {hex(most_called[0])} ({most_called[1]} callers)")
+
+# Get call chain between two functions
+try:
+    path = nx.shortest_path(kb.functions.callgraph, 0x401000, 0x402000)
+    print(f"Call path: {' -> '.join(hex(a) for a in path)}")
+except nx.NetworkXNoPath:
+    print("No call path found")
+```
+
+### Working with Large Binaries
+
+```python
+# Use cache limit for large binaries
+kb.functions = FunctionManager(kb, cache_limit=1000)
+
+# Use meta_only for faster iteration
+for func in kb.functions.values(meta_only=True):
+    # Only access basic properties
+    print(f"{hex(func.addr)}: {func.name}")
+    # Don't access func.blocks or func.graph (not loaded)
+```

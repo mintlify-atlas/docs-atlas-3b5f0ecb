@@ -1,0 +1,341 @@
+---
+title: CFG (Control Flow Graph)
+description: API reference for CFGFast and CFGEmulated control flow graph analyses
+---
+
+angr provides two main CFG recovery analyses: **CFGFast** for fast, static analysis and **CFGEmulated** for accurate, symbolic execution-based analysis.
+
+## CFGFast
+
+`CFGFast` performs fast control-flow graph recovery by using light-weight analysis combined with heuristics. It does not perform expensive data-flow analysis or symbolic execution.
+
+### Constructor
+
+```python
+CFGFast(
+    binary=None,
+    objects=None,
+    regions=None,
+    symbols=True,
+    function_prologues=None,
+    resolve_indirect_jumps=True,
+    force_complete_scan=False,
+    data_references=True,
+    cross_references=False,
+    normalize=False,
+    start_at_entry=True,
+    function_starts=None,
+    detect_tail_calls=False,
+    base_state=None,
+    eh_frame=True,
+    indirect_jump_resolvers=None,
+    **kwargs
+)
+```
+
+<ParamField path="binary" type="cle.Backend | None">
+  The binary to recover CFG on. By default the main binary is used.
+</ParamField>
+
+<ParamField path="objects" type="list[cle.Backend] | None">
+  A list of objects to recover the CFG on. By default all loaded objects are analyzed.
+</ParamField>
+
+<ParamField path="regions" type="list[tuple[int, int]] | None">
+  A list of tuples `(start_address, end_address)` describing memory regions that the CFG should cover.
+</ParamField>
+
+<ParamField path="symbols" type="bool" default="True">
+  Get function beginnings from symbols in the binary.
+</ParamField>
+
+<ParamField path="function_prologues" type="bool | None">
+  Scan the binary for function prologues and use those positions as function beginnings. Defaults to `True` for non-.NET binaries.
+</ParamField>
+
+<ParamField path="resolve_indirect_jumps" type="bool" default="True">
+  Try to resolve indirect jumps. This is necessary to resolve jump targets from jump tables.
+</ParamField>
+
+<ParamField path="force_complete_scan" type="bool" default="False">
+  Perform a complete scan on the binary and maximize the number of identified code blocks.
+</ParamField>
+
+<ParamField path="data_references" type="bool" default="True">
+  Enables the collection of references to data used by individual instructions.
+</ParamField>
+
+<ParamField path="cross_references" type="bool" default="False">
+  Whether CFGFast should collect cross-references from the entire program. This performs constant propagation on the entire program and may be slower and consume more memory. Implies `data_references=True`.
+</ParamField>
+
+<ParamField path="normalize" type="bool" default="False">
+  Normalize the CFG as well as all function graphs after CFG recovery.
+</ParamField>
+
+<ParamField path="start_at_entry" type="bool" default="True">
+  Begin CFG recovery at the entry point of the project.
+</ParamField>
+
+<ParamField path="function_starts" type="list[int] | None">
+  A list of extra function starting points. CFGFast will try to resume scanning from each address in the list.
+</ParamField>
+
+<ParamField path="detect_tail_calls" type="bool" default="False">
+  Enable aggressive tail-call optimization detection.
+</ParamField>
+
+<ParamField path="base_state" type="SimState | None">
+  A state to use as a backer for all memory loads.
+</ParamField>
+
+<ParamField path="eh_frame" type="bool" default="True">
+  Retrieve function starts from the `.eh_frame` of ELF binaries or exception records of PE binaries.
+</ParamField>
+
+<ParamField path="indirect_jump_resolvers" type="list | None">
+  A custom list of indirect jump resolvers. If None or empty, default indirect jump resolvers specific to this architecture and binary types will be loaded.
+</ParamField>
+
+### Properties
+
+<ResponseField name="graph" type="SpillingCFG">
+  The control flow graph as a NetworkX DiGraph.
+</ResponseField>
+
+<ResponseField name="functions" type="FunctionManager">
+  The function manager containing all identified functions.
+</ResponseField>
+
+<ResponseField name="memory_data" type="dict">
+  A mapping of addresses to `MemoryData` objects representing data in memory.
+</ResponseField>
+
+<ResponseField name="jump_tables" type="dict">
+  A mapping of addresses to jump table information.
+</ResponseField>
+
+<ResponseField name="indirect_jumps" type="dict">
+  A mapping of addresses to `IndirectJump` objects.
+</ResponseField>
+
+### Example Usage
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+
+# Fast CFG recovery
+cfg = project.analyses.CFGFast()
+
+# Access the graph
+print(f"Number of nodes: {len(cfg.graph.nodes())}")
+print(f"Number of functions: {len(cfg.functions)}")
+
+# Get a specific function
+main_func = cfg.functions.get('main')
+if main_func:
+    print(f"Main function at {hex(main_func.addr)}")
+```
+
+---
+
+## CFGEmulated
+
+`CFGEmulated` performs accurate control-flow graph recovery using symbolic execution. It is slower than CFGFast but provides more precise results.
+
+### Constructor
+
+```python
+CFGEmulated(
+    context_sensitivity_level=1,
+    starts=None,
+    avoid_runs=None,
+    enable_function_hints=False,
+    call_depth=None,
+    initial_state=None,
+    keep_state=False,
+    resolve_indirect_jumps=True,
+    enable_advanced_backward_slicing=False,
+    enable_symbolic_back_traversal=False,
+    indirect_jump_resolvers=None,
+    normalize=False,
+    max_iterations=1,
+    base_graph=None,
+    iropt_level=None,
+    max_steps=None,
+    **kwargs
+)
+```
+
+<ParamField path="context_sensitivity_level" type="int" default="1">
+  The level of context-sensitivity of this CFG. Ranges from 0 to infinity. Higher values track more calling context.
+</ParamField>
+
+<ParamField path="starts" type="list | None">
+  A collection of starting points to begin analysis. Can contain:
+  - Integer addresses
+  - 2-tuples of `(address, jumpkind)`
+  - `SimState` instances
+</ParamField>
+
+<ParamField path="avoid_runs" type="list | None">
+  A list of runs to avoid during analysis.
+</ParamField>
+
+<ParamField path="enable_function_hints" type="bool" default="False">
+  Whether to use function hints (constants that might be used as exit targets).
+</ParamField>
+
+<ParamField path="call_depth" type="int | None">
+  How deep in the call stack to trace. `None` means no limit.
+</ParamField>
+
+<ParamField path="initial_state" type="SimState | None">
+  An initial state to use to begin analysis.
+</ParamField>
+
+<ParamField path="keep_state" type="bool" default="False">
+  Whether to keep the SimStates for each CFGNode.
+</ParamField>
+
+<ParamField path="resolve_indirect_jumps" type="bool" default="True">
+  Whether to enable the indirect jump resolvers for resolving indirect jumps.
+</ParamField>
+
+<ParamField path="normalize" type="bool" default="False">
+  If the CFG as well as all Function graphs should be normalized.
+</ParamField>
+
+<ParamField path="max_iterations" type="int" default="1">
+  The maximum number of iterations that each basic block should be "executed". Larger numbers are required for complex analyses like loop analysis.
+</ParamField>
+
+<ParamField path="base_graph" type="networkx.DiGraph | None">
+  A basic control flow graph to follow. CFG recovery will strictly follow nodes and edges shown in the graph.
+</ParamField>
+
+<ParamField path="iropt_level" type="int | None">
+  The optimization level of VEX IR (0, 1, 2). The default level will be used if `None`.
+</ParamField>
+
+<ParamField path="max_steps" type="int | None">
+  The maximum number of basic blocks to recover for the longest path from each start before pausing.
+</ParamField>
+
+### Properties
+
+<ResponseField name="graph" type="SpillingCFG">
+  The control flow graph as a NetworkX DiGraph.
+</ResponseField>
+
+<ResponseField name="functions" type="FunctionManager">
+  The function manager containing all identified functions.
+</ResponseField>
+
+<ResponseField name="deadends" type="list">
+  Get all CFGNodes that have an out-degree of 0.
+</ResponseField>
+
+<ResponseField name="unresolvables" type="set">
+  Get those SimRuns that have non-resolvable exits.
+</ResponseField>
+
+### Methods
+
+#### copy()
+
+Make a copy of the CFG.
+
+```python
+new_cfg = cfg.copy()
+```
+
+**Returns:** A copy of the CFG instance.
+
+#### resume(starts=None, max_steps=None)
+
+Resume a paused or terminated control flow graph recovery.
+
+<ParamField path="starts" type="list | None">
+  A collection of new starts to resume from. If `None`, resume from where it was paused.
+</ParamField>
+
+<ParamField path="max_steps" type="int | None">
+  The maximum number of blocks on the longest path starting from each start before pausing.
+</ParamField>
+
+#### get_function_subgraph(start, max_call_depth=None)
+
+Get a sub-graph of a certain function.
+
+<ParamField path="start" type="int">
+  The function start address.
+</ParamField>
+
+<ParamField path="max_call_depth" type="int | None">
+  Call depth limit. `None` indicates no limit.
+</ParamField>
+
+**Returns:** A CFGEmulated instance which is a sub-graph of the original graph.
+
+### Example Usage
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+
+# Emulated CFG recovery with context sensitivity
+cfg = project.analyses.CFGEmulated(
+    context_sensitivity_level=2,
+    keep_state=True,
+    max_iterations=3
+)
+
+# Access nodes and edges
+for node in cfg.graph.nodes():
+    print(f"Node at {hex(node.addr)}")
+    
+# Get function subgraph
+if 'main' in cfg.functions:
+    main_addr = cfg.functions['main'].addr
+    main_cfg = cfg.get_function_subgraph(main_addr)
+```
+
+---
+
+## CFGNode
+
+Both CFGFast and CFGEmulated create CFGNode objects representing basic blocks in the control flow graph.
+
+### Properties
+
+<ResponseField name="addr" type="int">
+  The address of this node.
+</ResponseField>
+
+<ResponseField name="size" type="int">
+  The size of this node in bytes.
+</ResponseField>
+
+<ResponseField name="function_address" type="int">
+  The address of the function this node belongs to.
+</ResponseField>
+
+<ResponseField name="block" type="Block">
+  The Block object for this node.
+</ResponseField>
+
+<ResponseField name="instruction_addrs" type="list[int]">
+  Addresses of all instructions in this node.
+</ResponseField>
+
+<ResponseField name="successors" type="list[CFGNode]">
+  List of successor CFGNodes.
+</ResponseField>
+
+<ResponseField name="predecessors" type="list[CFGNode]">
+  List of predecessor CFGNodes.
+</ResponseField>

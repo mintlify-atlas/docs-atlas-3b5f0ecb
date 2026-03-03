@@ -1,0 +1,637 @@
+---
+title: SimulationManager
+description: Manage multiple states during symbolic execution with stashes and exploration techniques
+---
+
+The `SimulationManager` (also called `simgr`) allows you to wrangle multiple states in a slick way. States are organized into "stashes", which you can step forward, filter, merge, and move around as you wish.
+
+## Class Signature
+
+```python
+class SimulationManager:
+    def __init__(
+        self,
+        project,
+        active_states=None,
+        stashes=None,
+        hierarchy=None,
+        resilience=None,
+        save_unsat=False,
+        auto_drop=None,
+        errored=None,
+        completion_mode=any,
+        techniques=None,
+        suggestions=True,
+        **kwargs,
+    )
+```
+
+## Parameters
+
+<ParamField path="project" type="Project">
+  The angr Project instance.
+</ParamField>
+
+<ParamField path="active_states" type="list[SimState]">
+  Active states to seed the "active" stash with.
+</ParamField>
+
+<ParamField path="stashes" type="dict[str, list[SimState]]">
+  A dictionary to use as the stash store.
+</ParamField>
+
+<ParamField path="hierarchy" type="StateHierarchy">
+  A StateHierarchy object to track relationships between states.
+</ParamField>
+
+<ParamField path="resilience" type="tuple | bool | None" default="None">
+  A set of errors to catch during stepping. False: catch no errors. None: catch angr-specific errors. True: catch many common errors.
+</ParamField>
+
+<ParamField path="save_unsat" type="bool" default="False">
+  If True, introduce unsatisfiable states into the `unsat` stash instead of discarding them.
+</ParamField>
+
+<ParamField path="auto_drop" type="set[str]">
+  A set of stash names which should be treated as garbage chutes.
+</ParamField>
+
+<ParamField path="completion_mode" type="Callable" default="any">
+  A function describing how multiple exploration techniques with the `complete` hook set will interact.
+</ParamField>
+
+<ParamField path="techniques" type="list[ExplorationTechnique]">
+  A list of techniques that should be pre-set to use with this manager.
+</ParamField>
+
+<ParamField path="suggestions" type="bool" default="True">
+  Whether to automatically install the Suggestions exploration technique.
+</ParamField>
+
+## Attributes
+
+<ResponseField name="active" type="list[SimState]">
+  The active stash containing states being actively explored.
+</ResponseField>
+
+<ResponseField name="stashed" type="list[SimState]">
+  States that have been temporarily stashed.
+</ResponseField>
+
+<ResponseField name="deadended" type="list[SimState]">
+  States that have reached a deadend (no successors).
+</ResponseField>
+
+<ResponseField name="errored" type="list[ErrorRecord]">
+  A list of ErrorRecord objects for states that encountered errors.
+</ResponseField>
+
+<ResponseField name="unsat" type="list[SimState]">
+  States with unsatisfiable constraints.
+</ResponseField>
+
+<ResponseField name="unconstrained" type="list[SimState]">
+  States with unconstrained instruction pointers.
+</ResponseField>
+
+<ResponseField name="pruned" type="list[SimState]">
+  States that have been pruned.
+</ResponseField>
+
+<ResponseField name="stashes" type="defaultdict[str, list[SimState]]">
+  Dictionary of all stashes.
+</ResponseField>
+
+## Constants
+
+<ResponseField name="ALL" type="str" default="_ALL">
+  Special stash name referring to all stashes.
+</ResponseField>
+
+<ResponseField name="DROP" type="str" default="_DROP">
+  Special stash name for dropping states.
+</ResponseField>
+
+## Methods
+
+### Core Execution
+
+<Accordion title="step()">
+  **Signature:**
+  ```python
+  def step(
+      self,
+      stash="active",
+      target_stash=None,
+      n=None,
+      selector_func=None,
+      step_func=None,
+      error_list=None,
+      successor_func=None,
+      until=None,
+      filter_func=None,
+      **run_args,
+  ) -> SimulationManager
+  ```
+
+  Step a stash of states forward and categorize the successors appropriately.
+
+  **Parameters:**
+  <ParamField path="stash" type="str" default="active">
+    The name of the stash to step.
+  </ParamField>
+
+  <ParamField path="target_stash" type="str">
+    The name of the stash to put results in (defaults to same as `stash`).
+  </ParamField>
+
+  <ParamField path="selector_func" type="Callable[[SimState], bool]">
+    If provided, only step states where this returns True.
+  </ParamField>
+
+  <ParamField path="step_func" type="Callable[[SimulationManager], SimulationManager]">
+    A maintenance function called after each step.
+  </ParamField>
+
+  <ParamField path="successor_func" type="Callable[[SimState], SimSuccessors]">
+    Custom function to generate successors for a state.
+  </ParamField>
+
+  <ParamField path="filter_func" type="Callable[[SimState], str]">
+    Function that returns the stash name for each state.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="run()">
+  **Signature:**
+  ```python
+  def run(
+      self,
+      stash="active",
+      n=None,
+      until=None,
+      **kwargs
+  ) -> SimulationManager
+  ```
+
+  Run until the SimulationManager has reached a completed state or until there is nothing left to run.
+
+  **Parameters:**
+  <ParamField path="stash" type="str" default="active">
+    Operate on this stash.
+  </ParamField>
+
+  <ParamField path="n" type="int">
+    Step at most this many times.
+  </ParamField>
+
+  <ParamField path="until" type="Callable[[SimulationManager], bool]">
+    A function that takes a SimulationManager and returns True when stepping should terminate.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="explore()">
+  **Signature:**
+  ```python
+  def explore(
+      self,
+      stash="active",
+      n=None,
+      find=None,
+      avoid=None,
+      find_stash="found",
+      avoid_stash="avoid",
+      cfg=None,
+      num_find=1,
+      avoid_priority=False,
+      **kwargs,
+  ) -> SimulationManager
+  ```
+
+  Tick stash forward, looking for states that match `find` and avoiding states that match `avoid`.
+
+  **Parameters:**
+  <ParamField path="stash" type="str" default="active">
+    The stash to explore.
+  </ParamField>
+
+  <ParamField path="n" type="int">
+    Maximum number of steps.
+  </ParamField>
+
+  <ParamField path="find" type="int | list[int] | Callable[[SimState], bool]">
+    An address, list of addresses, or function to identify found states.
+  </ParamField>
+
+  <ParamField path="avoid" type="int | list[int] | Callable[[SimState], bool]">
+    An address, list of addresses, or function to identify states to avoid.
+  </ParamField>
+
+  <ParamField path="find_stash" type="str" default="found">
+    Stash to put found states in.
+  </ParamField>
+
+  <ParamField path="avoid_stash" type="str" default="avoid">
+    Stash to put avoided states in.
+  </ParamField>
+
+  <ParamField path="num_find" type="int" default="1">
+    Explore until this many states are found.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+### Exploration Techniques
+
+<Accordion title="use_technique()">
+  **Signature:**
+  ```python
+  def use_technique(self, tech: ExplorationTechnique) -> ExplorationTechnique
+  ```
+
+  Use an exploration technique with this SimulationManager.
+
+  **Parameters:**
+  <ParamField path="tech" type="ExplorationTechnique">
+    An ExplorationTechnique object that modifies the SimulationManager's behavior.
+  </ParamField>
+
+  **Returns:** `ExplorationTechnique` - The technique that was added.
+</Accordion>
+
+<Accordion title="remove_technique()">
+  **Signature:**
+  ```python
+  def remove_technique(self, tech: ExplorationTechnique) -> ExplorationTechnique
+  ```
+
+  Remove an exploration technique from the list of active techniques.
+
+  **Parameters:**
+  <ParamField path="tech" type="ExplorationTechnique">
+    The ExplorationTechnique to remove.
+  </ParamField>
+
+  **Returns:** `ExplorationTechnique` - The removed technique.
+</Accordion>
+
+### State Management
+
+<Accordion title="move()">
+  **Signature:**
+  ```python
+  def move(
+      self,
+      from_stash: str,
+      to_stash: str,
+      filter_func: Callable[[SimState], bool] | None = None
+  ) -> SimulationManager
+  ```
+
+  Move states from one stash to another.
+
+  **Parameters:**
+  <ParamField path="from_stash" type="str">
+    Take matching states from this stash.
+  </ParamField>
+
+  <ParamField path="to_stash" type="str">
+    Put matching states into this stash.
+  </ParamField>
+
+  <ParamField path="filter_func" type="Callable[[SimState], bool]">
+    Function that returns True for states to move.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="stash()">
+  **Signature:**
+  ```python
+  def stash(
+      self,
+      filter_func=None,
+      from_stash="active",
+      to_stash="stashed"
+  ) -> SimulationManager
+  ```
+
+  Stash some states. Alias for `move()` with default stashes.
+
+  **Parameters:**
+  <ParamField path="filter_func" type="Callable[[SimState], bool]">
+    Stash states where this returns True.
+  </ParamField>
+
+  <ParamField path="from_stash" type="str" default="active">
+    Take states from this stash.
+  </ParamField>
+
+  <ParamField path="to_stash" type="str" default="stashed">
+    Put states into this stash.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="unstash()">
+  **Signature:**
+  ```python
+  def unstash(
+      self,
+      filter_func=None,
+      to_stash="active",
+      from_stash="stashed"
+  ) -> SimulationManager
+  ```
+
+  Unstash some states. Alias for `move()` with default stashes.
+
+  **Parameters:**
+  <ParamField path="filter_func" type="Callable[[SimState], bool]">
+    Unstash states where this returns True.
+  </ParamField>
+
+  <ParamField path="from_stash" type="str" default="stashed">
+    Take states from this stash.
+  </ParamField>
+
+  <ParamField path="to_stash" type="str" default="active">
+    Put states into this stash.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="drop()">
+  **Signature:**
+  ```python
+  def drop(
+      self,
+      filter_func=None,
+      stash="active"
+  ) -> SimulationManager
+  ```
+
+  Drop states from a stash.
+
+  **Parameters:**
+  <ParamField path="filter_func" type="Callable[[SimState], bool]">
+    Drop states where this returns True.
+  </ParamField>
+
+  <ParamField path="stash" type="str" default="active">
+    Drop from this stash.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="prune()">
+  **Signature:**
+  ```python
+  def prune(
+      self,
+      filter_func=None,
+      from_stash="active",
+      to_stash="pruned"
+  ) -> SimulationManager
+  ```
+
+  Prune unsatisfiable states from a stash.
+
+  **Parameters:**
+  <ParamField path="filter_func" type="Callable[[SimState], bool]">
+    Only prune states matching this filter.
+  </ParamField>
+
+  <ParamField path="from_stash" type="str" default="active">
+    Prune from this stash.
+  </ParamField>
+
+  <ParamField path="to_stash" type="str" default="pruned">
+    Put pruned states here.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="merge()">
+  **Signature:**
+  ```python
+  def merge(
+      self,
+      merge_func=None,
+      merge_key=None,
+      stash="active",
+      prune=True
+  ) -> SimulationManager
+  ```
+
+  Merge states in a given stash.
+
+  **Parameters:**
+  <ParamField path="merge_func" type="Callable">
+    Custom merge function (uses state.merge by default).
+  </ParamField>
+
+  <ParamField path="merge_key" type="Callable[[SimState], Any]">
+    Function returning a key for grouping mergeable states.
+  </ParamField>
+
+  <ParamField path="stash" type="str" default="active">
+    The stash to merge.
+  </ParamField>
+
+  <ParamField path="prune" type="bool" default="True">
+    Whether to prune before merging.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+### Utility Methods
+
+<Accordion title="apply()">
+  **Signature:**
+  ```python
+  def apply(
+      self,
+      state_func=None,
+      stash_func=None,
+      stash="active",
+      to_stash=None
+  ) -> SimulationManager
+  ```
+
+  Apply a function to states or an entire stash.
+
+  **Parameters:**
+  <ParamField path="state_func" type="Callable[[SimState], SimState | list[SimState]]">
+    Function to apply to each state.
+  </ParamField>
+
+  <ParamField path="stash_func" type="Callable[[list[SimState]], list[SimState]]">
+    Function to apply to the whole stash.
+  </ParamField>
+
+  <ParamField path="stash" type="str" default="active">
+    Stash to work with.
+  </ParamField>
+
+  <ParamField path="to_stash" type="str">
+    Store results in this stash.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="split()">
+  **Signature:**
+  ```python
+  def split(
+      self,
+      stash_splitter=None,
+      stash_ranker=None,
+      state_ranker=None,
+      limit=8,
+      from_stash="active",
+      to_stash="stashed",
+  ) -> SimulationManager
+  ```
+
+  Split a stash into two based on various criteria.
+
+  **Parameters:**
+  <ParamField path="stash_splitter" type="Callable[[list[SimState]], tuple[list, list]]">
+    Function that splits the stash into two lists.
+  </ParamField>
+
+  <ParamField path="stash_ranker" type="Callable[[list[SimState]], list[SimState]]">
+    Function that ranks states (first `limit` kept).
+  </ParamField>
+
+  <ParamField path="state_ranker" type="Callable[[SimState], Any]">
+    Function providing sort key for states.
+  </ParamField>
+
+  <ParamField path="limit" type="int" default="8">
+    Number of states to keep.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="populate()">
+  **Signature:**
+  ```python
+  def populate(self, stash: str, states: list[SimState]) -> SimulationManager
+  ```
+
+  Populate a stash with a collection of states.
+
+  **Parameters:**
+  <ParamField path="stash" type="str">
+    The stash to populate.
+  </ParamField>
+
+  <ParamField path="states" type="list[SimState]">
+    States to add to the stash.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - Self, for chaining.
+</Accordion>
+
+<Accordion title="copy()">
+  **Signature:**
+  ```python
+  def copy(self, deep=False) -> SimulationManager
+  ```
+
+  Make a copy of this simulation manager.
+
+  **Parameters:**
+  <ParamField path="deep" type="bool" default="False">
+    If True, copy all states as well.
+  </ParamField>
+
+  **Returns:** `SimulationManager` - A copy of this manager.
+</Accordion>
+
+<Accordion title="complete()">
+  **Signature:**
+  ```python
+  def complete(self) -> bool
+  ```
+
+  Check if the manager has reached a "completed" state according to active exploration techniques.
+
+  **Returns:** `bool` - True if complete, False otherwise.
+</Accordion>
+
+## ErrorRecord Class
+
+```python
+class ErrorRecord:
+    state: SimState
+    error: Exception
+    traceback: TracebackType
+```
+
+<Accordion title="debug()">
+  Launch a postmortem debug shell at the site of the error.
+</Accordion>
+
+<Accordion title="reraise()">
+  Re-raise the error with its original traceback.
+</Accordion>
+
+## Example Usage
+
+```python
+import angr
+
+proj = angr.Project('/bin/ls')
+
+# Create a simulation manager
+simgr = proj.factory.simulation_manager()
+
+# Step execution
+simgr.step()
+print(f"Active states: {len(simgr.active)}")
+
+# Explore to find a specific address
+simgr.explore(find=0x400000, avoid=[0x400100, 0x400200])
+
+if simgr.found:
+    found_state = simgr.found[0]
+    print(f"Found state at {found_state.addr:#x}")
+
+# Use stashes
+simgr.stash(filter_func=lambda s: s.addr == 0x400300)
+simgr.unstash()
+
+# Apply function to all states
+def print_addr(state):
+    print(f"State at {state.addr:#x}")
+    return state
+
+simgr.apply(state_func=print_addr)
+
+# Use exploration technique
+from angr.exploration_techniques import DFS
+simgr.use_technique(DFS())
+simgr.run()
+
+# Handle errors
+if simgr.errored:
+    for err in simgr.errored:
+        print(f"Error: {err.error}")
+        print(f"State: {err.state}")
+```

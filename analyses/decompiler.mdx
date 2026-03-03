@@ -1,0 +1,468 @@
+---
+title: Decompiler
+description: Decompile binary code to readable pseudocode in angr
+---
+
+angr's decompiler transforms binary code into human-readable pseudocode through a sophisticated multi-stage pipeline that includes CFG recovery, variable analysis, type inference, and code structuring.
+
+## Overview
+
+The `Decompiler` analysis converts functions from machine code to high-level pseudocode by:
+1. Converting to AIL (angr Intermediate Language)
+2. Recovering variables and types
+3. Performing optimizations
+4. Structuring control flow
+5. Generating C-like code
+
+## Basic Usage
+
+```python
+import angr
+
+# Load the binary
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+
+# Generate CFG first (or use an existing one)
+cfg = p.analyses.CFGFast()
+
+# Get a function to decompile
+func = cfg.kb.functions['main']
+
+# Decompile it
+dec = p.analyses.Decompiler(func, cfg=cfg.model)
+
+# Get the pseudocode
+if dec.codegen is not None:
+    print(dec.codegen.text)
+```
+
+## Output Example
+
+```c
+void main(int argc, char **argv, char **envp) {
+    int v0;
+    char *v1;
+    
+    if (argc > 1) {
+        v1 = argv[1];
+        v0 = strlen(v1);
+        printf("Length: %d\n", v0);
+    }
+    return;
+}
+```
+
+## Decompilation Pipeline
+
+<Steps>
+  <Step title="CFG Recovery">
+    The decompiler requires a normalized CFG. If not provided, one is generated:
+    
+    ```python
+    dec = p.analyses.Decompiler(func)  # Auto-generates CFG
+    ```
+  </Step>
+  
+  <Step title="Clinic: AIL Conversion">
+    Binary code is lifted to AIL (angr Intermediate Language), a higher-level IR:
+    
+    - Converts VEX IR to AIL
+    - Simplifies expressions
+    - Removes redundant operations
+  </Step>
+  
+  <Step title="Variable Recovery">
+    Identifies stack variables, registers, and global variables:
+    
+    ```python
+    # Access recovered variables
+    for var in dec.clinic.variable_kb.variables[func.addr]:
+        print(f"Variable: {var}")
+    ```
+  </Step>
+  
+  <Step title="Optimization Passes">
+    Multiple optimization stages:
+    
+    - Constant propagation
+    - Dead code elimination
+    - Expression simplification
+    - Call expression folding
+  </Step>
+  
+  <Step title="Type Inference">
+    Infers variable types through constraint solving:
+    
+    - Analyzes operations on variables
+    - Propagates type constraints
+    - Resolves to concrete types
+  </Step>
+  
+  <Step title="Structuring">
+    Recovers high-level control structures:
+    
+    - Identifies loops (while, do-while, for)
+    - Recovers if-then-else
+    - Handles switch statements
+    - Removes goto statements where possible
+  </Step>
+  
+  <Step title="Code Generation">
+    Generates C-like pseudocode:
+    
+    ```python
+    print(dec.codegen.text)  # C pseudocode
+    ```
+  </Step>
+</Steps>
+
+## Configuration Options
+
+### Basic Options
+
+```python
+dec = p.analyses.Decompiler(
+    func,
+    
+    # Provide existing CFG
+    cfg=cfg.model,
+    
+    # Optimization preset: 'default', 'basic', 'minimal'
+    preset='default',
+    
+    # Generate code (set False to only analyze)
+    generate_code=True,
+    
+    # Flavor: 'pseudocode' or 'source'
+    flavor='pseudocode',
+)
+```
+
+### Advanced Options
+
+```python
+from angr.analyses.decompiler import DecompilationOption
+
+dec = p.analyses.Decompiler(
+    func,
+    
+    # Custom optimization passes
+    optimization_passes=my_passes,
+    
+    # Variable knowledge base (for reuse)
+    variable_kb=kb,
+    
+    # Control structuring algorithm
+    options=[
+        (DecompilationOption.STRUCTURER, 'phoenix'),
+    ],
+    
+    # Use/update cache
+    use_cache=True,
+    update_cache=True,
+)
+```
+
+## Decompilation Presets
+
+<Tabs>
+  <Tab title="default">
+    **Default Preset**: Best balance of speed and quality
+    
+    ```python
+    dec = p.analyses.Decompiler(func, preset='default')
+    ```
+    
+    Includes:
+    - All standard optimizations
+    - Type inference
+    - Advanced structuring
+  </Tab>
+  
+  <Tab title="basic">
+    **Basic Preset**: Faster but less optimized
+    
+    ```python
+    dec = p.analyses.Decompiler(func, preset='basic')
+    ```
+    
+    Includes:
+    - Essential optimizations only
+    - Basic type inference
+    - Simple structuring
+  </Tab>
+  
+  <Tab title="minimal">
+    **Minimal Preset**: Fastest, minimal optimization
+    
+    ```python
+    dec = p.analyses.Decompiler(func, preset='minimal')
+    ```
+    
+    Includes:
+    - Constant folding only
+    - No type inference
+    - Minimal structuring
+  </Tab>
+</Tabs>
+
+## Accessing Decompilation Results
+
+### Generated Code
+
+```python
+# Get the pseudocode text
+if dec.codegen is not None:
+    pseudocode = dec.codegen.text
+    print(pseudocode)
+    
+    # Get the structured representation
+    cfunc = dec.codegen.cfunc
+    print(cfunc)  # CFunction object
+    
+    # Map positions to statements
+    for pos_map in dec.codegen.pos_to_node.items():
+        print(pos_map)
+```
+
+### AIL Graph
+
+```python
+# Access the optimized AIL graph
+import networkx as nx
+
+for block in dec.clinic.graph.nodes():
+    print(f"Block at {block.addr:#x}:")
+    for stmt in block.statements:
+        print(f"  {stmt}")
+
+# Visualize
+nx.write_gexf(dec.clinic.graph, "ail_graph.gexf")
+```
+
+### Variable Information
+
+```python
+# Access variable manager
+var_manager = dec.clinic.variable_kb.variables[func.addr]
+
+# Iterate over variables
+for var in var_manager.variables:
+    print(f"Variable: {var}")
+    print(f"  Type: {var.type if hasattr(var, 'type') else 'unknown'}")
+    print(f"  Size: {var.size}")
+    
+    # Stack variables
+    from angr.sim_variable import SimStackVariable
+    if isinstance(var, SimStackVariable):
+        print(f"  Stack offset: {var.offset}")
+```
+
+### Recovered Structures
+
+```python
+# Access the structured sequence
+if dec.seq_node is not None:
+    from angr.analyses.decompiler.structuring import SequenceNode
+    
+    def print_structure(node, indent=0):
+        prefix = "  " * indent
+        if isinstance(node, SequenceNode):
+            print(f"{prefix}Sequence:")
+            for n in node.nodes:
+                print_structure(n, indent + 1)
+        else:
+            print(f"{prefix}{type(node).__name__}")
+    
+    print_structure(dec.seq_node)
+```
+
+## Custom Optimization Passes
+
+Create custom optimizations:
+
+```python
+from angr.analyses.decompiler.optimization_passes import OptimizationPass
+
+class MyOptimization(OptimizationPass):
+    ARCHES = ["X86", "AMD64"]
+    PLATFORMS = ["linux", "windows"]
+    
+    def __init__(self, func, **kwargs):
+        super().__init__(func, **kwargs)
+    
+    def _check(self):
+        # Return True if optimization applies
+        return True
+    
+    def _analyze(self, cache=None):
+        # Perform the optimization
+        # Modify self.out_graph
+        pass
+
+# Use custom passes
+my_passes = [
+    MyOptimization,
+    # ... other passes
+]
+
+dec = p.analyses.Decompiler(func, optimization_passes=my_passes)
+```
+
+## Error Handling
+
+```python
+try:
+    dec = p.analyses.Decompiler(func)
+    if dec.codegen is None:
+        print("Decompilation failed")
+        if dec.errors:
+            for error in dec.errors:
+                print(f"Error: {error}")
+except Exception as e:
+    print(f"Decompilation error: {e}")
+```
+
+## Example: Batch Decompilation
+
+```python
+import angr
+
+def decompile_all_functions(binary_path, output_dir):
+    """Decompile all functions in a binary."""
+    import os
+    
+    # Load and analyze
+    p = angr.Project(binary_path, load_options={'auto_load_libs': False})
+    cfg = p.analyses.CFGFast(normalize=True)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Decompile each function
+    for func_addr, func in cfg.kb.functions.items():
+        if func.is_simprocedure or func.is_plt:
+            continue
+        
+        print(f"Decompiling {func.name} at {func_addr:#x}")
+        
+        try:
+            dec = p.analyses.Decompiler(func, cfg=cfg.model)
+            
+            if dec.codegen is not None:
+                # Save to file
+                filename = f"{func.name}_{func_addr:x}.c"
+                filepath = os.path.join(output_dir, filename)
+                
+                with open(filepath, 'w') as f:
+                    f.write(f"// Function: {func.name}\n")
+                    f.write(f"// Address: {func_addr:#x}\n\n")
+                    f.write(dec.codegen.text)
+                
+                print(f"  -> Saved to {filename}")
+            else:
+                print(f"  -> Failed to decompile")
+                
+        except Exception as e:
+            print(f"  -> Error: {e}")
+
+# Usage
+decompile_all_functions('/bin/ls', './decompiled')
+```
+
+## Example: Comparing Different Presets
+
+```python
+import angr
+import time
+
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+cfg = p.analyses.CFGFast()
+func = cfg.kb.functions['main']
+
+presets = ['minimal', 'basic', 'default']
+
+for preset in presets:
+    print(f"\n=== Preset: {preset} ===")
+    
+    start = time.time()
+    dec = p.analyses.Decompiler(func, preset=preset)
+    elapsed = time.time() - start
+    
+    print(f"Time: {elapsed:.2f}s")
+    
+    if dec.codegen:
+        lines = dec.codegen.text.split('\n')
+        print(f"Lines of code: {len(lines)}")
+        print(f"Preview:\n{lines[0]}\n{lines[1] if len(lines) > 1 else ''}")
+```
+
+## Advanced Features
+
+### Inline Functions
+
+```python
+# Inline specific functions during decompilation
+dec = p.analyses.Decompiler(
+    func,
+    inline_functions=[helper_func_addr]
+)
+```
+
+### Type Hints
+
+```python
+from angr.sim_type import SimTypeInt, SimTypePointer
+
+# Set function prototype
+func.prototype = SimTypeFunction(
+    [SimTypePointer(SimTypeChar()), SimTypeInt()],
+    SimTypeInt()
+)
+
+# Decompile with type information
+dec = p.analyses.Decompiler(func)
+```
+
+### Decompilation Cache
+
+```python
+# First decompilation
+dec1 = p.analyses.Decompiler(func, use_cache=True, update_cache=True)
+
+# Second decompilation uses cache
+dec2 = p.analyses.Decompiler(func, use_cache=True)
+print("Used cache:", dec2.cache is not None)
+
+# Access cached results
+if (func.addr, 'pseudocode') in p.kb.decompilations:
+    cached = p.kb.decompilations[(func.addr, 'pseudocode')]
+    print(cached.codegen.text)
+```
+
+## Common Issues
+
+<Warning>
+**Performance**: Decompilation can be slow for large functions. Consider:
+- Using `preset='basic'` for faster results
+- Decompiling specific functions instead of whole binaries
+- Enabling cache for repeated decompilations
+</Warning>
+
+<Note>
+**Quality**: Decompilation quality depends on:
+- Binary complexity (obfuscation, optimizations)
+- Architecture support
+- Available type information
+- CFG accuracy
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Variable Recovery" href="/analyses/variable-recovery">
+    Deep dive into variable analysis
+  </Card>
+  <Card title="CFG Analysis" href="/analyses/cfg">
+    Understanding the CFG input
+  </Card>
+</CardGroup>

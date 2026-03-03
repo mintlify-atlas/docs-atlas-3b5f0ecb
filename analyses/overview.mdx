@@ -1,0 +1,159 @@
+---
+title: Analysis Overview
+description: Overview of angr's binary analysis capabilities
+---
+
+angr provides a comprehensive suite of program analysis techniques for binary executables. These analyses range from control-flow graph recovery to high-level decompilation, enabling deep understanding of binary behavior.
+
+## Available Analyses
+
+angr's analysis framework is built around the `AnalysesHub`, which provides access to all registered analyses through the `project.analyses` interface.
+
+### Control Flow Analysis
+
+<CardGroup cols={2}>
+  <Card title="CFGFast" icon="bolt" href="/analyses/cfg#cfgfast">
+    Fast static control-flow graph recovery
+  </Card>
+  <Card title="CFGEmulated" icon="microchip" href="/analyses/cfg#cfgemulated">
+    Dynamic CFG recovery through symbolic execution
+  </Card>
+</CardGroup>
+
+### Data Flow Analysis
+
+<CardGroup cols={2}>
+  <Card title="DDG" icon="diagram-project" href="/analyses/data-flow#ddg">
+    Data Dependence Graph analysis
+  </Card>
+  <Card title="VFG" icon="share-nodes" href="/analyses/data-flow#vfg">
+    Value-Flow Graph with abstract interpretation
+  </Card>
+</CardGroup>
+
+### Program Understanding
+
+<CardGroup cols={2}>
+  <Card title="Decompiler" icon="code" href="/analyses/decompiler">
+    Decompile binary code to pseudocode
+  </Card>
+  <Card title="Variable Recovery" icon="database" href="/analyses/variable-recovery">
+    Identify and recover program variables
+  </Card>
+  <Card title="Identifier" icon="magnifying-glass" href="/analyses/identifier">
+    Identify common library functions
+  </Card>
+</CardGroup>
+
+## Analysis Framework
+
+All analyses in angr inherit from the base `Analysis` class and are registered with the framework:
+
+```python
+import angr
+
+# Load a binary
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+
+# Access analyses through the hub
+cfg = p.analyses.CFGFast()
+decomp = p.analyses.Decompiler(func)
+ddg = p.analyses.DDG(cfg)
+```
+
+## Analysis Categories
+
+### Static Analyses
+
+Static analyses examine the binary without executing it:
+- **CFGFast**: Fast control-flow recovery
+- **Variable Recovery**: Identify stack and register variables
+- **Identifier**: Match against known library functions
+
+### Dynamic Analyses
+
+Dynamic analyses use symbolic or concrete execution:
+- **CFGEmulated**: CFG recovery through symbolic execution
+- **VFG**: Value-flow analysis with abstract interpretation
+- **DDG**: Data dependence tracking during execution
+
+### Hybrid Analyses
+
+Combining multiple techniques:
+- **Decompiler**: Uses CFG, variable recovery, reaching definitions, and structuring
+- **Reaching Definitions**: Data-flow analysis for definition-use chains
+
+## Common Patterns
+
+### Running an Analysis
+
+```python
+# Most analyses are accessed through project.analyses
+result = p.analyses.AnalysisName(parameters)
+
+# Results are stored in the analysis object
+print(result.graph)
+print(result.nodes)
+```
+
+### Using Knowledge Base
+
+Many analyses store results in the knowledge base:
+
+```python
+# CFG stores functions
+cfg = p.analyses.CFGFast()
+for func in cfg.kb.functions.values():
+    print(f"Function at {func.addr:#x}: {func.name}")
+
+# Decompiler stores decompiled code
+decomp = p.analyses.Decompiler(func)
+print(decomp.codegen.text)
+```
+
+## Analysis Options
+
+<Note>
+Most analyses accept common parameters:
+- `fail_fast`: Stop on first error (default: False)
+- Progress callbacks for long-running analyses
+- Knowledge base selection: `kb=custom_kb`
+</Note>
+
+## Forward Analysis Framework
+
+Many analyses inherit from `ForwardAnalysis`, which provides:
+- Job-based worklist algorithm
+- State merging and widening
+- Context-sensitive analysis
+- Progress tracking
+
+```python
+from angr.analyses import ForwardAnalysis
+
+class CustomAnalysis(ForwardAnalysis, Analysis):
+    def _pre_analysis(self):
+        # Initialize
+        pass
+    
+    def _get_successors(self, job):
+        # Return successor jobs
+        pass
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CFG Recovery" href="/analyses/cfg">
+    Learn about control-flow graph analysis
+  </Card>
+  <Card title="Decompilation" href="/analyses/decompiler">
+    Decompile binaries to readable code
+  </Card>
+  <Card title="Data Flow" href="/analyses/data-flow">
+    Track data dependencies in programs
+  </Card>
+  <Card title="Variable Recovery" href="/analyses/variable-recovery">
+    Identify program variables and types
+  </Card>
+</CardGroup>

@@ -1,0 +1,301 @@
+---
+title: KnowledgeBase
+description: Core knowledge base class for storing analysis artifacts in angr
+---
+
+The `KnowledgeBase` class represents a "model" of knowledge about a binary artifact, containing analysis results like CFGs, function information, variables, type information, and cross-references.
+
+## Class Definition
+
+```python
+class KnowledgeBase:
+    """Represents a model of knowledge about an artifact.
+    
+    Contains things like a CFG, data references, etc.
+    """
+```
+
+## Constructor
+
+<ParamField path="project" type="Project" required>
+  The angr Project instance this knowledge base belongs to
+</ParamField>
+
+<ParamField path="obj" type="object" default="None">
+  **Deprecated** - This parameter is deprecated and should not be used
+</ParamField>
+
+<ParamField path="name" type="str" default="None">
+  Optional name for this knowledge base instance. If not provided, a default name like `kb_0` is assigned
+</ParamField>
+
+```python
+kb = KnowledgeBase(project)
+kb_named = KnowledgeBase(project, name="my_kb")
+```
+
+## Properties
+
+The KnowledgeBase provides access to various knowledge plugins through properties:
+
+<ResponseField name="functions" type="FunctionManager">
+  Manages all functions discovered in the binary. Access functions by address or name, iterate through all functions, and manage the call graph.
+</ResponseField>
+
+<ResponseField name="variables" type="VariableManager">
+  Manages variables across the binary, including local variables, stack variables, registers, and global variables.
+</ResponseField>
+
+<ResponseField name="defs" type="KeyDefinitionManager">
+  Manages reaching definitions and key definitions for variables.
+</ResponseField>
+
+<ResponseField name="cfgs" type="CFGManager">
+  Manages Control Flow Graphs (CFGs) for the binary.
+</ResponseField>
+
+<ResponseField name="types" type="TypesStore">
+  Stores and manages type information recovered from the binary.
+</ResponseField>
+
+<ResponseField name="propagations" type="PropagationManager">
+  Manages propagation analysis results.
+</ResponseField>
+
+<ResponseField name="xrefs" type="XRefManager">
+  Manages cross-references between code and data locations.
+</ResponseField>
+
+<ResponseField name="decompilations" type="StructuredCodeManager">
+  Stores decompilation results and structured code representations.
+</ResponseField>
+
+<ResponseField name="obfuscations" type="Obfuscations">
+  Tracks detected obfuscation techniques in the binary.
+</ResponseField>
+
+<ResponseField name="rtdb" type="RuntimeDb">
+  Runtime database for storing temporary analysis data.
+</ResponseField>
+
+<ResponseField name="callgraph" type="networkx.MultiDiGraph">
+  The call graph of the binary. This is a convenience property that accesses `kb.functions.callgraph`.
+</ResponseField>
+
+<ResponseField name="unresolved_indirect_jumps" type="dict">
+  Dictionary of unresolved indirect jumps in the binary.
+</ResponseField>
+
+<ResponseField name="resolved_indirect_jumps" type="dict">
+  Dictionary of resolved indirect jumps in the binary.
+</ResponseField>
+
+## Plugin Management
+
+The KnowledgeBase uses a plugin architecture to manage different types of knowledge.
+
+### has_plugin
+
+```python
+kb.has_plugin(name: str) -> bool
+```
+
+Check if a plugin with the given name is registered.
+
+<ParamField path="name" type="str" required>
+  Name of the plugin to check
+</ParamField>
+
+**Returns:** `bool` - True if the plugin exists, False otherwise
+
+### get_plugin
+
+```python
+kb.get_plugin(name: str) -> KnowledgeBasePlugin
+```
+
+Get a plugin by name. If the plugin doesn't exist but is a default plugin, it will be created automatically.
+
+<ParamField path="name" type="str" required>
+  Name of the plugin to retrieve
+</ParamField>
+
+**Returns:** The plugin instance
+
+**Raises:** `KeyError` if the plugin doesn't exist and is not a default plugin
+
+### register_plugin
+
+```python
+kb.register_plugin(name: str, plugin: KnowledgeBasePlugin) -> KnowledgeBasePlugin
+```
+
+Register a custom plugin with the knowledge base.
+
+<ParamField path="name" type="str" required>
+  Name to register the plugin under
+</ParamField>
+
+<ParamField path="plugin" type="KnowledgeBasePlugin" required>
+  The plugin instance to register
+</ParamField>
+
+**Returns:** The registered plugin instance
+
+### release_plugin
+
+```python
+kb.release_plugin(name: str) -> None
+```
+
+Remove a plugin from the knowledge base.
+
+<ParamField path="name" type="str" required>
+  Name of the plugin to release
+</ParamField>
+
+## Type-Safe Plugin Access
+
+For better type inference and IDE support, use these type-safe methods:
+
+### get_knowledge
+
+```python
+kb.get_knowledge(requested_plugin_cls: type[K]) -> K | None
+```
+
+Type-safe method to request a knowledge base plugin. Returns None if the plugin doesn't exist.
+
+<ParamField path="requested_plugin_cls" type="type[K]" required>
+  The class type of the plugin to retrieve
+</ParamField>
+
+**Returns:** Instance of the requested plugin class, or None if not found
+
+```python
+from angr.knowledge_plugins import FunctionManager
+
+func_manager = kb.get_knowledge(FunctionManager)
+if func_manager is not None:
+    # func_manager is properly typed as FunctionManager
+    print(len(func_manager))
+```
+
+### request_knowledge
+
+```python
+kb.request_knowledge(requested_plugin_cls: type[K]) -> K
+```
+
+Type-safe method to request a knowledge base plugin. Creates a new instance if it doesn't exist.
+
+<ParamField path="requested_plugin_cls" type="type[K]" required>
+  The class type of the plugin to retrieve or create
+</ParamField>
+
+**Returns:** Instance of the requested plugin class (always returns a valid instance)
+
+```python
+from angr.knowledge_plugins import PropagationManager
+
+prop_manager = kb.request_knowledge(PropagationManager)
+# prop_manager is guaranteed to be a valid PropagationManager instance
+```
+
+## Magic Methods
+
+### Container Protocol
+
+```python
+'functions' in kb  # Check if plugin exists
+kb.functions       # Access plugin via attribute
+kb['functions']    # Access plugin via key (calls get_plugin)
+```
+
+### Attribute Access
+
+Plugins can be accessed as attributes:
+
+```python
+# These are equivalent:
+funcs1 = kb.functions
+funcs2 = kb.get_plugin('functions')
+```
+
+## Usage Examples
+
+### Basic Usage
+
+```python
+import angr
+
+# Create project and access knowledge base
+project = angr.Project('binary')
+kb = project.kb
+
+# Access functions
+for addr, func in kb.functions.items():
+    print(f"Function at {hex(addr)}: {func.name}")
+
+# Access the call graph
+for caller, callee in kb.callgraph.edges():
+    print(f"{hex(caller)} -> {hex(callee)}")
+```
+
+### Working with Variables
+
+```python
+# Get variable manager for a specific function
+func_addr = 0x401000
+var_manager = kb.variables[func_addr]
+
+# Access stack variables
+stack_vars = var_manager.get_variables(sort='stack')
+for var in stack_vars:
+    print(f"Stack variable: {var.name} at offset {var.offset}")
+```
+
+### Custom Plugins
+
+```python
+from angr.knowledge_plugins.plugin import KnowledgeBasePlugin
+
+class MyCustomPlugin(KnowledgeBasePlugin):
+    def __init__(self, kb):
+        super().__init__(kb)
+        self.data = {}
+    
+    def add_data(self, key, value):
+        self.data[key] = value
+
+# Register the plugin
+plugin = MyCustomPlugin(kb)
+kb.register_plugin('custom', plugin)
+
+# Use the plugin
+kb.custom.add_data('key1', 'value1')
+```
+
+### Type Information
+
+```python
+# Access type store
+types_store = kb.types
+
+# Register a type
+from angr.sim_type import SimStruct, SimTypeInt
+
+my_struct = SimStruct({
+    'field1': SimTypeInt(),
+    'field2': SimTypeInt()
+}, name='MyStruct')
+
+types_store['MyStruct'] = my_struct
+```
+
+## Notes
+
+- The KnowledgeBase is automatically created when you create an angr Project
+- Most plugins are lazily initialized - they're created only when first accessed
+- The knowledge base is picklable and can be saved/loaded for analysis persistence
+- Plugins are accessed via attribute syntax (e.g., `kb.functions`) for convenience

@@ -1,0 +1,565 @@
+---
+title: POSIX Plugin
+description: API reference for angr's POSIX environment simulation plugin
+---
+
+The POSIX plugin (`SimSystemPosix`) simulates a POSIX-like operating system environment, providing file descriptors, process information, and system call support. It's accessible via `state.posix`.
+
+## Overview
+
+The POSIX plugin provides:
+- File descriptor management (stdin, stdout, stderr)
+- Process information (PID, UID, GID)
+- Program arguments and environment variables
+- Signal mask handling
+- Memory break (brk) management
+- Socket support
+
+## File Descriptors
+
+### Standard Streams
+
+The plugin automatically creates standard file descriptors:
+
+<ParamField path="stdin" type="SimPacketsStream">
+  File descriptor 0 - standard input (read-only)
+</ParamField>
+
+<ParamField path="stdout" type="SimPacketsStream">
+  File descriptor 1 - standard output (write-only)
+</ParamField>
+
+<ParamField path="stderr" type="SimPacketsStream">
+  File descriptor 2 - standard error (write-only)
+</ParamField>
+
+```python
+# Access standard streams
+stdin = state.posix.stdin
+stdout = state.posix.stdout
+stderr = state.posix.stderr
+
+# Read from stdin
+data = stdin.read(10)  # Read 10 bytes
+
+# Write to stdout
+stdout.write(b"Hello, World!\n")
+```
+
+### File Descriptor Table
+
+<ParamField path="fd" type="dict">
+  Dictionary mapping file descriptor numbers to SimFileDescriptor objects.
+</ParamField>
+
+```python
+# List all open file descriptors
+for fd_num in state.posix.fd:
+    print(f"FD {fd_num}: {state.posix.fd[fd_num]}")
+
+# Check if fd is open
+if 3 in state.posix.fd:
+    print("File descriptor 3 is open")
+```
+
+## File Operations
+
+### open
+
+```python
+open(name, flags, preferred_fd=None)
+```
+
+Open a file and return a file descriptor.
+
+<ParamField path="name" type="str | bytes">
+  Path to the file to open.
+</ParamField>
+
+<ParamField path="flags" type="int | BV">
+  File access flags (O_RDONLY, O_WRONLY, O_RDWR, etc.).
+</ParamField>
+
+<ParamField path="preferred_fd" type="int" optional>
+  Request a specific file descriptor number.
+</ParamField>
+
+<ResponseField name="return" type="int | BV">
+  File descriptor number on success, -1 on failure.
+</ResponseField>
+
+```python
+from angr.storage.file import Flags
+
+# Open file for reading
+fd = state.posix.open(b"/etc/passwd", Flags.O_RDONLY)
+
+# Open file for writing (creates if doesn't exist)
+fd = state.posix.open(b"/tmp/output", Flags.O_WRONLY | Flags.O_CREAT)
+
+# Open with preferred fd
+fd = state.posix.open(b"/tmp/data", Flags.O_RDWR, preferred_fd=10)
+```
+
+### close
+
+```python
+close(fd)
+```
+
+Close a file descriptor.
+
+<ParamField path="fd" type="int | BV">
+  The file descriptor to close.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  True if successful, False otherwise.
+</ResponseField>
+
+```python
+if state.posix.close(fd):
+    print("File closed successfully")
+else:
+    print("Failed to close file")
+```
+
+### get_fd
+
+```python
+get_fd(fd, create_file=True)
+```
+
+Lookup the SimFileDescriptor for a given file descriptor number.
+
+<ParamField path="fd" type="int | BV">
+  File descriptor number to lookup.
+</ParamField>
+
+<ParamField path="create_file" type="bool" default="true">
+  If fd is symbolic, create a new file and constrain fd to it.
+</ParamField>
+
+<ResponseField name="return" type="SimFileDescriptor | None">
+  The file descriptor object, or None if not found.
+</ResponseField>
+
+```python
+# Get file descriptor object
+fd_obj = state.posix.get_fd(3)
+if fd_obj:
+    # Read from file
+    data = fd_obj.read(100)
+```
+
+### dumps
+
+```python
+dumps(fd, **kwargs)
+```
+
+Get the concrete content of a file descriptor.
+
+<ParamField path="fd" type="int">
+  File descriptor number (0-2 for stdin/stdout/stderr).
+</ParamField>
+
+<ResponseField name="return" type="bytes">
+  The concrete file content.
+</ResponseField>
+
+```python
+# Get everything written to stdout
+output = state.posix.dumps(1)
+print(output.decode())  # Convert bytes to string
+
+# Get stderr output  
+errors = state.posix.dumps(2)
+```
+
+### dump_file_by_path
+
+```python
+dump_file_by_path(path, **kwargs)
+```
+
+Get concrete content of a file by its path.
+
+<ParamField path="path" type="str">
+  File path.
+</ParamField>
+
+<ResponseField name="return" type="bytes | None">
+  File contents, or None if file doesn't exist.
+</ResponseField>
+
+```python
+content = state.posix.dump_file_by_path("/tmp/output")
+if content:
+    print(content.decode())
+```
+
+## Socket Operations
+
+### open_socket
+
+```python
+open_socket(ident)
+```
+
+Open a socket and return a file descriptor.
+
+<ParamField path="ident" type="any">
+  Socket identifier (can be any hashable object).
+</ParamField>
+
+<ResponseField name="return" type="int">
+  File descriptor for the socket.
+</ResponseField>
+
+```python
+# Open a socket
+sock_fd = state.posix.open_socket('socket_0')
+
+# Sockets are full duplex (read and write)
+fd_obj = state.posix.get_fd(sock_fd)
+fd_obj.write(b"Hello")
+data = fd_obj.read(5)
+```
+
+<ParamField path="sockets" type="dict">
+  Dictionary mapping socket identifiers to (read_stream, write_stream) tuples.
+</ParamField>
+
+<ParamField path="socket_queue" type="list">
+  Queue of socket pairs waiting to be assigned.
+</ParamField>
+
+## Process Information
+
+### Process IDs
+
+<ParamField path="pid" type="int" default="1337">
+  Process ID.
+</ParamField>
+
+<ParamField path="ppid" type="int" default="1336">
+  Parent process ID.
+</ParamField>
+
+<ParamField path="uid" type="int" default="1000">
+  User ID.
+</ParamField>
+
+<ParamField path="gid" type="int" default="1000">
+  Group ID.
+</ParamField>
+
+```python
+# Get process info
+print(f"PID: {state.posix.pid}")
+print(f"UID: {state.posix.uid}")
+
+# Set process IDs (usually done at state creation)
+state.posix.pid = 1000
+state.posix.uid = 0  # Run as root
+```
+
+## Program Arguments and Environment
+
+### Command Line Arguments
+
+<ParamField path="argc" type="int | BV">
+  Argument count.
+</ParamField>
+
+<ParamField path="argv" type="list | BV">
+  Argument vector (list of argument pointers).
+</ParamField>
+
+```python
+# Set program arguments
+state.posix.argv = [b"/bin/program", b"arg1", b"arg2"]
+state.posix.argc = len(state.posix.argv)
+
+# Arguments are typically set up by entry_state
+state = project.factory.entry_state(args=['/bin/program', 'arg1', 'arg2'])
+print(state.posix.argc)  # 3
+```
+
+### Environment Variables
+
+<ParamField path="environ" type="list | BV">
+  Environment variable list (list of "KEY=VALUE" pointers).
+</ParamField>
+
+```python
+# Set environment variables
+state.posix.environ = [b"PATH=/usr/bin", b"HOME=/home/user"]
+
+# Set via entry_state
+state = project.factory.entry_state(
+    env={'PATH': '/usr/bin', 'HOME': '/home/user'}
+)
+```
+
+### Auxiliary Vector
+
+<ParamField path="auxv" type="dict">
+  ELF auxiliary vector for program initialization.
+</ParamField>
+
+## Memory Management
+
+### set_brk
+
+```python
+set_brk(new_brk)
+```
+
+Set the program break (end of heap).
+
+<ParamField path="new_brk" type="int | BV">
+  New break address.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  The actual break address (may differ if request failed).
+</ResponseField>
+
+```python
+# Expand heap by 0x1000 bytes
+current_brk = state.posix.brk
+new_brk = state.posix.set_brk(current_brk + 0x1000)
+print(f"Heap expanded to {hex(state.solver.eval(new_brk))}")
+```
+
+<ParamField path="brk" type="BV" default="0x1B00000">
+  Current program break address.
+</ParamField>
+
+## File Statistics
+
+### fstat
+
+```python
+fstat(fd)
+```
+
+Get file statistics for a file descriptor.
+
+<ParamField path="fd" type="int | BV">
+  File descriptor number.
+</ParamField>
+
+<ResponseField name="return" type="Stat">
+  Stat namedtuple with file information.
+</ResponseField>
+
+```python
+stat = state.posix.fstat(fd)
+print(f"File size: {state.solver.eval(stat.st_size)}")
+print(f"File mode: {state.solver.eval(stat.st_mode)}")
+```
+
+The `Stat` namedtuple contains:
+
+- `st_dev` - Device ID
+- `st_ino` - Inode number  
+- `st_nlink` - Number of hard links
+- `st_mode` - File mode/permissions
+- `st_uid` - User ID
+- `st_gid` - Group ID
+- `st_rdev` - Device ID (if special file)
+- `st_size` - File size in bytes
+- `st_blksize` - Block size
+- `st_blocks` - Number of blocks
+- `st_atime` - Last access time
+- `st_atimensec` - Access time nanoseconds
+- `st_mtime` - Last modification time
+- `st_mtimensec` - Modification time nanoseconds
+- `st_ctime` - Last status change time
+- `st_ctimensec` - Status change time nanoseconds
+
+## Signal Handling
+
+### sigmask
+
+```python
+sigmask(sigsetsize=None)
+```
+
+Get or create the signal mask.
+
+<ParamField path="sigsetsize" type="int" optional>
+  Size in bytes of the signal set.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  The signal mask bitvector.
+</ResponseField>
+
+```python
+# Get signal mask
+mask = state.posix.sigmask()
+
+# Check if signal is blocked
+signal_num = 15  # SIGTERM
+if state.solver.is_true((mask & (1 << signal_num)) != 0):
+    print("SIGTERM is blocked")
+```
+
+### sigprocmask
+
+```python
+sigprocmask(how, new_mask, sigsetsize, valid_ptr=True)
+```
+
+Update the signal mask.
+
+<ParamField path="how" type="int | BV">
+  How to modify the mask: SIG_BLOCK (0), SIG_UNBLOCK (1), or SIG_SETMASK (2).
+</ParamField>
+
+<ParamField path="new_mask" type="BV">
+  The new mask value.
+</ParamField>
+
+<ParamField path="sigsetsize" type="int">
+  Size of signal set in bytes.
+</ParamField>
+
+<ParamField path="valid_ptr" type="bool" default="true">
+  Whether new_mask pointer was valid (not NULL).
+</ParamField>
+
+```python
+# Block SIGTERM (signal 15)
+new_mask = state.solver.BVV(1 << 15, 64)
+state.posix.sigprocmask(state.posix.SIG_BLOCK, new_mask, 8)
+
+# Unblock SIGINT (signal 2)
+mask = state.solver.BVV(1 << 2, 64)
+state.posix.sigprocmask(state.posix.SIG_UNBLOCK, mask, 8)
+```
+
+## POSIX Error Codes
+
+The plugin defines standard POSIX error codes as class constants:
+
+```python
+state.posix.EPERM      # Operation not permitted (1)
+state.posix.ENOENT     # No such file or directory (2)
+state.posix.ESRCH      # No such process (3)
+state.posix.EINTR      # Interrupted system call (4)
+state.posix.EIO        # I/O error (5)
+state.posix.EBADF      # Bad file descriptor (9)
+state.posix.EACCES     # Permission denied (13)
+state.posix.EEXIST     # File exists (17)
+state.posix.ENOTDIR    # Not a directory (20)
+state.posix.EISDIR     # Is a directory (21)
+state.posix.EINVAL     # Invalid argument (22)
+state.posix.EMFILE     # Too many open files (24)
+# ... and many more
+```
+
+## Closed File Descriptors
+
+<ParamField path="closed_fds" type="list">
+  List of (fd_number, SimFileDescriptor) tuples for closed descriptors.
+</ParamField>
+
+```python
+# Track closed files
+for fd_num, fd_obj in state.posix.closed_fds:
+    print(f"FD {fd_num} was closed")
+```
+
+## Examples
+
+### Reading from stdin
+
+```python
+import angr
+
+project = angr.Project('/bin/cat')
+state = project.factory.entry_state(
+    stdin=angr.SimFileStream(name='stdin', content=b'Hello, World!')
+)
+
+# Simulate reading
+simgr = project.factory.simulation_manager(state)
+simgr.run()
+
+# Check stdout
+output = simgr.deadended[0].posix.dumps(1)
+print(output)  # Should contain "Hello, World!"
+```
+
+### Working with Files
+
+```python
+from angr.storage.file import Flags, SimFile
+
+# Create a file in the filesystem
+file_content = b"secret_data"
+state.fs.insert(b"/tmp/secret", SimFile(b"secret", content=file_content))
+
+# Open the file
+fd = state.posix.open(b"/tmp/secret", Flags.O_RDONLY)
+if state.solver.eval(fd) >= 0:
+    # Read from file
+    fd_obj = state.posix.get_fd(state.solver.eval(fd))
+    data = fd_obj.read(11)
+    print(state.solver.eval(data, cast_to=bytes))  # b'secret_data'
+    
+    # Close file
+    state.posix.close(state.solver.eval(fd))
+```
+
+### Symbolic Command Line Arguments
+
+```python
+# Create symbolic argument
+arg_length = 16
+sym_arg = state.solver.BVS('arg1', arg_length * 8)
+
+# Set up program with symbolic argument
+state = project.factory.entry_state(
+    args=['/bin/program', sym_arg]
+)
+
+# Run and find states that reach a certain point
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=0x401234)
+
+if simgr.found:
+    # Solve for the argument
+    solution = simgr.found[0].solver.eval(sym_arg, cast_to=bytes)
+    print(f"Argument: {solution}")
+```
+
+### Socket Communication
+
+```python
+# Create two states that will communicate
+state1 = project.factory.entry_state()
+state2 = project.factory.entry_state()
+
+# Create socket pair
+sock1 = state1.posix.open_socket('connection_1')
+sock2 = state2.posix.open_socket('connection_1')
+
+# State 1 writes to socket
+state1.posix.get_fd(sock1).write(b"message")
+
+# State 2 reads from socket (same identifier means shared buffer)
+data = state2.posix.get_fd(sock2).read(7)
+print(state2.solver.eval(data, cast_to=bytes))  # b'message'
+```
+
+## See Also
+
+- [Filesystem Plugin](/api/state-plugins/filesystem) - File system operations
+- [SimFile Documentation](/api/storage/simfile) - File object API
+- [State Options](/core-concepts/options) - File existence options (ALL_FILES_EXIST, etc.)

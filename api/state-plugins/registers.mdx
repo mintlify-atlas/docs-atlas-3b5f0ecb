@@ -1,0 +1,383 @@
+---
+title: Registers Plugin
+description: API reference for angr's registers plugin for CPU register access
+---
+
+The registers plugin provides access to CPU registers in angr states. Registers are stored in a flat memory region and can be accessed through `state.registers` or the convenient `state.regs` interface.
+
+## Overview
+
+Registers in angr are stored as a special memory region with offsets defined by the architecture. The `state.regs` interface provides convenient property-based access to registers by name.
+
+## Accessing Registers
+
+There are two main ways to access registers:
+
+```python
+# Using state.regs (convenient, name-based access)
+eax = state.regs.eax
+state.regs.ebx = 0x1234
+
+# Using state.registers (offset-based access)
+eax = state.registers.load('eax')
+state.registers.store('ebx', 0x1234)
+```
+
+## SimRegNameView
+
+The `state.regs` interface is provided by the `SimRegNameView` plugin, which translates register names to memory operations.
+
+### Getting Register Values
+
+```python
+# Direct property access
+rax = state.regs.rax
+rip = state.regs.rip
+eflags = state.regs.eflags
+
+# Prefix with underscore to disable inspect/actions
+rax_silent = state.regs._rax  # No SimInspect, no SimActions
+```
+
+<Accordion title="Disabling Inspect and Actions">
+  Prefixing a register name with `_` (underscore) prevents:
+  - SimInspect breakpoints from being triggered
+  - SimActions from being created
+  - Events from being logged
+  
+  This is useful for internal operations that shouldn't be visible to analysis plugins.
+</Accordion>
+
+### Setting Register Values
+
+```python
+# Set to concrete value
+state.regs.rax = 0x1000
+
+# Set to symbolic value
+sym_val = state.solver.BVS('input', 64)
+state.regs.rbx = sym_val
+
+# Set to another register's value
+state.regs.rcx = state.regs.rax
+
+# Silent store (no inspect/actions)
+state.regs._rdx = 0x2000
+```
+
+## Register Memory Interface
+
+The underlying `state.registers` memory region provides more control:
+
+### load
+
+```python
+load(reg_name, size=None, *, inspect=True, disable_actions=False, events=True, **kwargs)
+```
+
+Load a register value by name.
+
+<ParamField path="reg_name" type="str | int">
+  The register name (e.g., 'rax', 'eip') or offset in the register file.
+</ParamField>
+
+<ParamField path="size" type="int" optional>
+  Number of bytes to load. If not specified, uses the register's natural size.
+</ParamField>
+
+<ParamField path="inspect" type="bool" default="true">
+  Whether to trigger SimInspect breakpoints.
+</ParamField>
+
+<ParamField path="disable_actions" type="bool" default="false">
+  Whether to disable creating SimActions.
+</ParamField>
+
+<ParamField path="events" type="bool" default="true">
+  Whether to generate history events.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  The register value as a claripy bitvector.
+</ResponseField>
+
+```python
+# Load by name
+rax = state.registers.load('rax')
+
+# Load by offset
+rax_offset = state.arch.registers['rax'][0]
+rax = state.registers.load(rax_offset, 8)
+
+# Silent load
+rax = state.registers.load('rax', inspect=False, disable_actions=True)
+```
+
+### store
+
+```python
+store(reg_name, value, size=None, *, inspect=True, disable_actions=False, **kwargs)
+```
+
+Store a value to a register by name.
+
+<ParamField path="reg_name" type="str | int">
+  The register name or offset in the register file.
+</ParamField>
+
+<ParamField path="value" type="BV | int">
+  The value to store.
+</ParamField>
+
+<ParamField path="size" type="int" optional>
+  Number of bytes to store. If not specified, uses the value's size.
+</ParamField>
+
+<ParamField path="inspect" type="bool" default="true">
+  Whether to trigger SimInspect breakpoints.
+</ParamField>
+
+<ParamField path="disable_actions" type="bool" default="false">
+  Whether to disable creating SimActions.
+</ParamField>
+
+```python
+# Store by name
+state.registers.store('rax', 0x1000)
+
+# Store symbolic value
+state.registers.store('rbx', state.solver.BVS('input', 64))
+
+# Store by offset
+rax_offset = state.arch.registers['rax'][0]
+state.registers.store(rax_offset, 0x2000, size=8)
+```
+
+## Architecture-Specific Registers
+
+Register names and availability depend on the architecture:
+
+### x86/AMD64 Registers
+
+```python
+# General purpose
+state.regs.rax, state.regs.rbx, state.regs.rcx, state.regs.rdx
+state.regs.rsi, state.regs.rdi, state.regs.rbp, state.regs.rsp
+
+# Instruction pointer
+state.regs.rip
+
+# Flags
+state.regs.eflags  # or state.regs.rflags on 64-bit
+
+# Segment registers
+state.regs.cs, state.regs.ds, state.regs.es, state.regs.fs, state.regs.gs, state.regs.ss
+
+# FPU/SIMD (special access methods required)
+state.regs.st0  # FPU stack
+state.regs.xmm0  # SSE registers
+```
+
+### ARM Registers
+
+```python
+# General purpose
+state.regs.r0, state.regs.r1, ..., state.regs.r12
+
+# Special registers
+state.regs.sp   # Stack pointer (r13)
+state.regs.lr   # Link register (r14)
+state.regs.pc   # Program counter (r15)
+
+# Flags
+state.regs.flags
+```
+
+### MIPS Registers
+
+```python
+# General purpose
+state.regs.v0, state.regs.v1  # Return values
+state.regs.a0, state.regs.a1, state.regs.a2, state.regs.a3  # Arguments
+state.regs.t0, state.regs.t1, ..., state.regs.t9  # Temporaries
+state.regs.s0, state.regs.s1, ..., state.regs.s7  # Saved
+
+# Special registers
+state.regs.sp, state.regs.fp, state.regs.ra, state.regs.pc
+```
+
+## Flag Manipulation
+
+CPU flags can be accessed and modified:
+
+```python
+# x86/AMD64 - individual flag access depends on architecture
+eflags = state.regs.eflags
+
+# Check specific flags (requires manual bit manipulation)
+zf_mask = 1 << 6  # Zero flag is bit 6
+zf = (state.regs.eflags & zf_mask) != 0
+
+# Set a flag
+state.regs.eflags = state.regs.eflags | zf_mask
+```
+
+## Register Properties
+
+### Available Register Names
+
+Get all available register names for the current architecture:
+
+```python
+reg_names = state.arch.register_names
+print(reg_names)
+# {'rax': (0, 8), 'rbx': (8, 8), ...}
+# Format: {name: (offset, size)}
+```
+
+### Register Information
+
+```python
+# Get register offset and size
+offset, size = state.arch.registers['rax']
+
+# Get register by offset
+for name, (offset, size) in state.arch.registers.items():
+    if offset == 0:
+        print(f"Register at offset 0: {name}")
+```
+
+## Special Registers
+
+### Instruction Pointer
+
+The instruction pointer has special handling:
+
+```python
+# Read IP
+ip = state.regs.ip  # Architecture-agnostic
+rip = state.regs.rip  # x86-64 specific
+pc = state.regs.pc  # ARM/MIPS specific
+
+# Set IP (for jumps/branches)
+state.regs.ip = 0x401000
+```
+
+### Stack Pointer
+
+```python
+# Read stack pointer
+sp = state.regs.sp  # Architecture-agnostic
+rsp = state.regs.rsp  # x86-64 specific
+
+# Modify stack pointer
+state.regs.sp = state.regs.sp - 8  # Allocate 8 bytes
+```
+
+## Working with Symbolic Registers
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+state = project.factory.entry_state()
+
+# Make a register symbolic
+sym_rax = state.solver.BVS('rax_input', 64)
+state.regs.rax = sym_rax
+
+# Add constraints on the register
+state.solver.add(state.regs.rax > 0)
+state.solver.add(state.regs.rax < 100)
+
+# Solve for register value
+possible_values = state.solver.eval_upto(state.regs.rax, 10)
+print(possible_values)  # [1, 2, 3, ...]
+```
+
+## Register Aliasing
+
+Some architectures have overlapping registers:
+
+```python
+# x86: AL/AH/AX/EAX/RAX all refer to overlapping storage
+state.regs.rax = 0x1122334455667788
+
+# Reading smaller aliases reads portions of RAX
+eax = state.solver.eval(state.regs.eax)  # Lower 32 bits: 0x55667788
+ax = state.solver.eval(state.regs.ax)    # Lower 16 bits: 0x7788  
+al = state.solver.eval(state.regs.al)    # Lower 8 bits: 0x88
+ah = state.solver.eval(state.regs.ah)    # Bits 8-15: 0x77
+
+# Writing to smaller aliases only modifies those bits
+state.regs.al = 0xFF
+print(hex(state.solver.eval(state.regs.rax)))  # 0x11223344556677FF
+```
+
+## Copying Register State
+
+```python
+# Save all registers
+saved_regs = {}
+for reg_name in state.arch.register_names:
+    saved_regs[reg_name] = state.registers.load(reg_name)
+
+# Restore all registers
+for reg_name, value in saved_regs.items():
+    state.registers.store(reg_name, value)
+```
+
+## Examples
+
+### Function Call Setup (x86-64)
+
+```python
+# Set up a function call following x86-64 calling convention
+state.regs.rdi = 0x1000  # First argument
+state.regs.rsi = 0x2000  # Second argument
+state.regs.rdx = 0x3000  # Third argument
+state.regs.rcx = 0x4000  # Fourth argument
+
+# Set return address
+return_addr = 0x400500
+state.regs.rsp = state.regs.rsp - 8
+state.memory.store(state.regs.rsp, return_addr, 8)
+
+# Jump to function
+state.regs.rip = 0x401000
+```
+
+### Syscall Setup (Linux x86-64)
+
+```python
+# Setup write(1, "Hello\n", 6) syscall
+state.regs.rax = 1      # syscall number (write)
+state.regs.rdi = 1      # fd (stdout)
+state.regs.rsi = 0x1000 # buffer address
+state.regs.rdx = 6      # count
+
+state.memory.store(0x1000, b"Hello\n")
+```
+
+### Conditional Execution Based on Flags
+
+```python
+# Simulate conditional jump based on zero flag
+eflags = state.regs.eflags
+zf_mask = 1 << 6
+
+# Check if zero flag is set
+zero_set = (eflags & zf_mask) != 0
+
+# Branch on zero flag
+if state.solver.is_true(zero_set):
+    state.regs.rip = 0x401000  # Jump taken
+else:
+    state.regs.rip = 0x401010  # Fall through
+```
+
+## See Also
+
+- [Memory Plugin](/api/state-plugins/memory) - Memory access operations
+- [Solver Plugin](/api/state-plugins/solver) - Constraint solving for symbolic values
+- [Architecture Documentation](https://github.com/angr/archinfo) - Architecture-specific register definitions

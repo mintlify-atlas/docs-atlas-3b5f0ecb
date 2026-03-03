@@ -1,0 +1,401 @@
+---
+title: Control-Flow Graph (CFG)
+description: Static and dynamic control-flow graph recovery in angr
+---
+
+angr provides two complementary approaches to control-flow graph (CFG) recovery: **CFGFast** for fast static analysis and **CFGEmulated** for precise dynamic analysis through symbolic execution.
+
+## Overview
+
+A Control-Flow Graph represents the structure of a program as a graph where:
+- **Nodes** are basic blocks (sequences of instructions with single entry/exit)
+- **Edges** represent control flow (jumps, calls, returns)
+
+<Warning>
+By default, angr loads shared libraries. For most CFG analyses, you should disable this:
+
+```python
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+```
+</Warning>
+
+## CFGFast: Static Analysis
+
+`CFGFast` uses static analysis to quickly recover the control-flow graph without executing code.
+
+### Basic Usage
+
+```python
+import angr
+
+# Load the binary
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+
+# Generate CFG
+cfg = p.analyses.CFGFast()
+
+print(f"Found {len(cfg.graph.nodes())} nodes")
+print(f"Found {len(cfg.graph.edges())} edges")
+print(f"Found {len(cfg.kb.functions)} functions")
+```
+
+### Key Features
+
+<Steps>
+  <Step title="Function Detection">
+    CFGFast identifies functions through:
+    - Binary symbols (for non-stripped binaries)
+    - Function prologues (architecture-specific patterns)
+    - Call targets
+    - Entry point analysis
+  </Step>
+  
+  <Step title="Control Flow Recovery">
+    - Lifts basic blocks to VEX IR
+    - Analyzes direct jumps and calls
+    - Resolves indirect jumps using jump table analysis
+    - Handles FakeRet edges for call returns
+  </Step>
+  
+  <Step title="Iterative Refinement">
+    - Initial pass assumes all functions return
+    - Second pass updates based on actual function behavior
+    - Removes FakeRet edges for non-returning functions
+  </Step>
+</Steps>
+
+### Configuration Options
+
+```python
+cfg = p.analyses.CFGFast(
+    # Start analysis from specific addresses
+    function_starts=[0x400000, 0x400100],
+    
+    # Force complete binary scan (disable for blobs)
+    force_complete_scan=True,
+    
+    # Normalize the CFG (each block belongs to one function)
+    normalize=False,
+    
+    # Resolve indirect jumps
+    resolve_indirect_jumps=True,
+    
+    # Collect data references
+    data_references=True,
+    
+    # Cross-references analysis
+    cross_references=True,
+)
+```
+
+### Accessing CFG Data
+
+```python
+# Get the NetworkX graph
+graph = cfg.graph
+
+# Get any node at an address
+node = cfg.model.get_any_node(0x400000)
+
+# Get all nodes at an address (multiple contexts)
+nodes = cfg.model.get_all_nodes(0x400000)
+
+# Iterate over nodes
+for node in graph.nodes():
+    print(f"Block at {node.addr:#x}, size {node.size}")
+
+# Get successors and predecessors
+for succ in graph.successors(node):
+    print(f"Successor: {succ.addr:#x}")
+
+for pred in graph.predecessors(node):
+    print(f"Predecessor: {pred.addr:#x}")
+
+# Get edges with jump kinds
+for src, dst, data in graph.edges(data=True):
+    jumpkind = data.get('jumpkind', 'Ijk_Boring')
+    print(f"{src.addr:#x} --[{jumpkind}]--> {dst.addr:#x}")
+```
+
+## CFGEmulated: Dynamic Analysis
+
+`CFGEmulated` uses symbolic execution to build a more accurate CFG by actually executing the program.
+
+### Basic Usage
+
+```python
+# Generate dynamic CFG
+cfg = p.analyses.CFGEmulated(
+    # Keep states at each node (memory intensive)
+    keep_state=True,
+    
+    # Context sensitivity level (0-infinity)
+    context_sensitivity_level=1,
+    
+    # Starting addresses
+    starts=[p.entry],
+)
+
+# Access states if keep_state=True
+for node in cfg.graph.nodes():
+    if node.state is not None:
+        print(f"State at {node.addr:#x}")
+```
+
+### Context Sensitivity
+
+Context sensitivity determines how many call stack frames to track:
+
+<Tabs>
+  <Tab title="Level 0">
+    **Callee-only**: Each function analyzed once
+    
+    ```python
+    cfg = p.analyses.CFGEmulated(context_sensitivity_level=0)
+    # Fast but less precise
+    ```
+  </Tab>
+  
+  <Tab title="Level 1">
+    **One caller + callee**: Distinguish different calling contexts
+    
+    ```python
+    cfg = p.analyses.CFGEmulated(context_sensitivity_level=1)
+    # Default: good balance of speed/precision
+    ```
+  </Tab>
+  
+  <Tab title="Level 2+">
+    **Multiple callers**: Track deeper call chains
+    
+    ```python
+    cfg = p.analyses.CFGEmulated(context_sensitivity_level=2)
+    # More precise but exponentially slower
+    ```
+  </Tab>
+</Tabs>
+
+### Advanced Options
+
+```python
+cfg = p.analyses.CFGEmulated(
+    # Limit analysis depth
+    call_depth=5,
+    
+    # Filter which calls to trace
+    call_tracing_filter=my_filter_func,
+    
+    # Custom initial state
+    initial_state=my_state,
+    
+    # Addresses to avoid
+    avoid_runs=[0x400500, 0x400600],
+    
+    # Add state options
+    state_add_options={angr.options.TRACK_MEMORY_ACTIONS},
+    
+    # Resolve indirect jumps
+    resolve_indirect_jumps=True,
+    
+    # Normalize the result
+    normalize=True,
+)
+```
+
+## Function Manager
+
+Both CFG analyses populate the Function Manager in the knowledge base:
+
+```python
+# Access functions
+funcs = cfg.kb.functions
+
+# Get function by address
+main = funcs[p.entry]
+
+# Function properties
+print(f"Name: {main.name}")
+print(f"Returns: {main.returning}")
+print(f"Blocks: {len(main.block_addrs)}")
+print(f"Calls: {len(main.get_call_sites())}")
+
+# String references
+for addr, string in main.string_references():
+    print(f"String at {addr:#x}: {string}")
+
+# Iterate blocks
+for block in main.blocks:
+    print(f"Block at {block.addr:#x}:")
+    block.pp()  # Pretty print
+
+# Get call targets
+for callsite in main.get_call_sites():
+    target = main.get_call_target(callsite)
+    print(f"Call at {callsite:#x} -> {target:#x}")
+
+# Function transition graph
+func_graph = main.transition_graph
+for node in func_graph.nodes():
+    print(f"Node in function: {node.addr:#x}")
+```
+
+## CFGNode Properties
+
+```python
+node = cfg.model.get_any_node(0x400000)
+
+# Basic properties
+print(f"Address: {node.addr:#x}")
+print(f"Size: {node.size}")
+print(f"Name: {node.name}")
+print(f"Function: {node.function_address:#x}")
+
+# Graph navigation
+print(f"Predecessors: {node.predecessors}")
+print(f"Successors: {node.successors}")
+
+# Block access
+if node.block is not None:
+    node.block.pp()
+
+# For CFGEmulated with keep_state=True
+if hasattr(node, 'state') and node.state:
+    print(f"State: {node.state}")
+```
+
+## Indirect Jump Resolution
+
+angr includes resolvers for common indirect jump patterns:
+
+<CodeGroup>
+```python Jump Tables
+# CFGFast automatically resolves jump tables
+cfg = p.analyses.CFGFast(resolve_indirect_jumps=True)
+
+# Access resolved targets
+for addr, jump in cfg.indirect_jumps.items():
+    print(f"Indirect jump at {addr:#x}")
+    print(f"Type: {jump.type}")
+    if jump.resolved_targets:
+        print(f"Targets: {[hex(t) for t in jump.resolved_targets]}")
+```
+
+```python Custom Resolvers
+from angr.analyses.cfg.indirect_jump_resolvers import IndirectJumpResolver
+
+class MyResolver(IndirectJumpResolver):
+    def filter(self, cfg, addr, func_addr, block, jumpkind):
+        # Return True if this resolver handles this jump
+        return jumpkind == 'Ijk_Boring'
+    
+    def resolve(self, cfg, addr, func_addr, block, jumpkind):
+        # Return list of target addresses
+        return [0x400100, 0x400200]
+
+cfg = p.analyses.CFGFast(
+    indirect_jump_resolvers=[MyResolver()]
+)
+```
+</CodeGroup>
+
+## Comparing CFGFast vs CFGEmulated
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>CFGFast</th>
+      <th>CFGEmulated</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Speed</td>
+      <td>⚡ Very Fast (seconds)</td>
+      <td>🐌 Slow (minutes to hours)</td>
+    </tr>
+    <tr>
+      <td>Accuracy</td>
+      <td>Good for most binaries</td>
+      <td>Higher (with caveats)</td>
+    </tr>
+    <tr>
+      <td>Indirect Jumps</td>
+      <td>Jump table analysis</td>
+      <td>Symbolic execution</td>
+    </tr>
+    <tr>
+      <td>State Tracking</td>
+      <td>❌ No</td>
+      <td>✅ Optional</td>
+    </tr>
+    <tr>
+      <td>Best For</td>
+      <td>Initial analysis, stripped binaries</td>
+      <td>Precise analysis, small functions</td>
+    </tr>
+  </tbody>
+</table>
+
+<Tip>
+**Recommendation**: Start with CFGFast for most use cases. Only use CFGEmulated when you need:
+- State information at each basic block
+- Very precise control flow for a specific function
+- Analysis of self-modifying code
+</Tip>
+
+## Example: Full CFG Analysis
+
+```python
+import angr
+import networkx as nx
+
+# Load binary
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+
+# Generate CFG
+cfg = p.analyses.CFGFast(normalize=True)
+
+print("=== CFG Statistics ===")
+print(f"Nodes: {len(cfg.graph.nodes())}")
+print(f"Edges: {len(cfg.graph.edges())}")
+print(f"Functions: {len(cfg.kb.functions)}")
+
+# Analyze main function
+main = cfg.kb.functions['main']
+print(f"\n=== Main Function ===")
+print(f"Address: {main.addr:#x}")
+print(f"Blocks: {len(main.block_addrs)}")
+print(f"Returns: {main.returning}")
+
+# Find longest path
+paths = nx.all_simple_paths(cfg.graph, 
+                            source=cfg.model.get_any_node(main.addr),
+                            target=None)
+max_path = max(paths, key=len, default=[])
+print(f"Longest path: {len(max_path)} blocks")
+
+# Find indirect jumps
+print(f"\n=== Indirect Jumps ===")
+for addr, jump in cfg.indirect_jumps.items():
+    func = cfg.kb.functions.floor_func(addr)
+    print(f"At {addr:#x} in {func.name if func else 'unknown'}")
+    if jump.resolved_targets:
+        print(f"  Targets: {[hex(t) for t in jump.resolved_targets]}")
+    else:
+        print("  Unresolved")
+
+# Export to other formats
+nx.write_gexf(cfg.graph, "cfg.gexf")
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Flow Analysis" href="/analyses/data-flow">
+    Build on CFG with DDG and VFG
+  </Card>
+  <Card title="Decompiler" href="/analyses/decompiler">
+    Decompile functions using the CFG
+  </Card>
+</CardGroup>

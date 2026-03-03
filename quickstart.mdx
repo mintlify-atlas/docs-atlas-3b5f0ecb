@@ -1,80 +1,192 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with angr and run your first binary analysis
 ---
 
-## Get started in three steps
+This guide will help you install angr and run your first binary analysis in minutes.
 
-Get your documentation site running locally and make your first customization.
+## Installation
 
-### Step 1: Set up your local environment
+The quickest way to install angr is using pip with a virtual environment:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Create a virtual environment">
+    Create and activate a Python virtual environment:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    python -m venv angr-env
+    source angr-env/bin/activate  # On Windows: angr-env\Scripts\activate
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    <Tip>Using a virtual environment prevents package conflicts with other Python projects.</Tip>
+  </Step>
+  
+  <Step title="Install angr">
+    Install angr using pip:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    pip install angr
+    ```
+    
+    This will install angr and all its required dependencies. The installation may take a few minutes.
+  </Step>
+  
+  <Step title="Verify installation">
+    Test that angr is installed correctly:
+    
+    ```bash
+    python -c "import angr; print(angr.__version__)"
+    ```
+    
+    You should see the version number printed (e.g., `9.2.205.dev0`).
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Your first angr script
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Let's start by loading a binary and exploring its basic properties.
 
-### Step 3: Go live
+### Load a binary
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+Create a new Python file called `analyze.py`:
+
+```python
+import angr
+
+# Load a binary (replace with your own binary path)
+project = angr.Project('/bin/ls', auto_load_libs=False)
+
+print(f"Architecture: {project.arch}")
+print(f"Entry point: {hex(project.entry)}")
+print(f"Binary filename: {project.filename}")
+```
+
+Run it:
+
+```bash
+python analyze.py
+```
+
+<Note>
+The `auto_load_libs=False` parameter tells angr not to load shared libraries, which speeds up loading for simple analysis.
+</Note>
+
+### Symbolic execution example
+
+Here's a simple example of using symbolic execution to automatically solve a CTF challenge:
+
+```python
+import angr
+
+# Load the binary
+project = angr.Project("challenge_binary", auto_load_libs=False)
+
+# Hook a specific address to print when reached
+@project.hook(0x400844)
+def print_flag(state):
+    print("FLAG SHOULD BE:", state.posix.dumps(0))
+    project.terminate_execution()
+
+# Execute the program symbolically
+project.execute()
+```
+
+This example:
+1. Loads a binary challenge file
+2. Hooks a specific address (0x400844) where the flag is printed
+3. Automatically explores execution paths to reach that address
+4. Prints the flag value when found
+
+<Tip>
+In an enhanced REPL like IPython, you can use tab-autocomplete on the `project` object to discover available methods and their docstrings.
+</Tip>
+
+## Understanding the Project object
+
+The `angr.Project` class is the main entry point for binary analysis. It provides:
+
+- **arch** - Architecture information (x86, ARM, etc.)
+- **entry** - Program entry point address
+- **loader** - Binary loader with information about loaded objects
+- **factory** - Factory for creating analysis states and simulation managers
+- **analyses** - Access to all available analyses (CFG, VFG, etc.)
+
+### Interactive exploration
+
+For interactive exploration, launch IPython or Python:
+
+```python
+import angr
+
+p = angr.Project('/bin/bash')
+
+# Explore available methods with tab completion
+p.<TAB>  # In IPython, press TAB to see available methods
+
+# Get help on any method
+help(p.factory.entry_state)
+```
+
+## Basic analysis workflow
+
+A typical angr analysis follows this pattern:
+
+<Steps>
+  <Step title="Load the binary">
+    ```python
+    project = angr.Project('binary_file', auto_load_libs=False)
+    ```
+  </Step>
+  
+  <Step title="Create an initial state">
+    ```python
+    state = project.factory.entry_state()
+    ```
+  </Step>
+  
+  <Step title="Create a simulation manager">
+    ```python
+    simgr = project.factory.simulation_manager(state)
+    ```
+  </Step>
+  
+  <Step title="Explore execution paths">
+    ```python
+    simgr.explore(find=0x400844, avoid=0x400850)
+    ```
+  </Step>
+  
+  <Step title="Extract results">
+    ```python
+    if simgr.found:
+        solution = simgr.found[0]
+        print(solution.posix.dumps(0))  # Print stdin
+    ```
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have angr running, here's what to explore next:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Learn about advanced installation options and optional dependencies
+  </Card>
+  
+  <Card title="Official Documentation" icon="book" href="https://docs.angr.io">
+    Explore comprehensive guides on symbolic execution, CFG analysis, and more
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="https://docs.angr.io/en/latest/api.html">
+    Browse the complete API documentation
+  </Card>
+  
+  <Card title="CTF Examples" icon="flag" href="https://docs.angr.io/examples">
+    See angr solve real CTF challenges
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+<Warning>
+angr requires Python 3.10 or higher. If you see compatibility errors, check your Python version with `python --version`.
+</Warning>

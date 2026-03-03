@@ -1,0 +1,80 @@
+---
+title: Introduction
+description: A platform-agnostic binary analysis framework powered by symbolic execution
+---
+
+angr is a suite of Python libraries that let you load a binary and perform sophisticated analysis on it. Built by the Computer Security Lab at UC Santa Barbara, SEFCOM at Arizona State University, and the open source community, angr brings academic-grade binary analysis techniques to security researchers and CTF players.
+
+## What can you do with angr?
+
+angr provides a comprehensive toolkit for binary analysis:
+
+<CardGroup cols={2}>
+  <Card title="Symbolic Execution" icon="wand-magic-sparkles">
+    Explore multiple execution paths simultaneously to discover program behavior and find inputs that trigger specific conditions.
+  </Card>
+  
+  <Card title="Control-Flow Analysis" icon="diagram-project">
+    Generate control-flow graphs (CFGs) to understand program structure and execution flow across multiple architectures.
+  </Card>
+  
+  <Card title="Decompilation" icon="code">
+    Convert binary code back into readable source code with angr's built-in decompiler.
+  </Card>
+  
+  <Card title="Multi-Architecture Support" icon="microchip">
+    Analyze binaries for x86, ARM, MIPS, PowerPC, and many other architectures with a unified API.
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+angr offers a rich set of analysis techniques:
+
+- **Disassembly and lifting** - Convert machine code to intermediate representation (IR)
+- **Program instrumentation** - Hook functions and modify program behavior during execution
+- **Symbolic execution** - Reason about program behavior with symbolic values
+- **Data-dependency analysis** - Track how data flows through a program
+- **Value-set analysis (VSA)** - Determine possible values of variables
+- **Decompilation** - Generate high-level pseudocode from binaries
+
+## Getting started
+
+The most common angr operation is loading a binary:
+
+```python
+import angr
+
+p = angr.Project('/bin/bash')
+```
+
+From there, you can use tab-autocomplete in enhanced REPLs like IPython to explore the available methods and their documentation.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Get up and running with angr in minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation instructions and troubleshooting
+  </Card>
+</CardGroup>
+
+## Who uses angr?
+
+angr is used by:
+
+- Security researchers for vulnerability discovery and exploit development
+- CTF teams (including Shellphish) for solving reverse engineering challenges
+- Academics for binary analysis research
+- Developers for understanding and testing compiled code
+
+## Learn more
+
+<Card title="angr Documentation" icon="book" href="https://docs.angr.io">
+  Visit the official angr documentation for comprehensive guides and API references
+</Card>
+
+<Note>
+angr requires Python 3.10 or higher. The framework has fully transitioned to Python 3 to provide the best performance and latest features.
+</Note>

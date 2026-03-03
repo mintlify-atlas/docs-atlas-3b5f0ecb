@@ -1,0 +1,541 @@
+---
+title: SimulationManager and Execution
+description: Managing and controlling symbolic execution with SimulationManager
+---
+
+The `SimulationManager` (often called `simgr`) is angr's primary interface for performing symbolic execution. It manages multiple states organized into "stashes" and provides powerful methods for exploration and analysis.
+
+## Creating a Simulation Manager
+
+Create a simulation manager from a state:
+
+```python
+import angr
+
+proj = angr.Project('./binary')
+state = proj.factory.entry_state()
+
+# Create simulation manager
+simgr = proj.factory.simulation_manager(state)
+# <SimulationManager with 1 active>
+
+# Or with multiple states
+simgr = proj.factory.simulation_manager([state1, state2])
+```
+
+## Stashes
+
+States are organized into named stashes. The default stash is `active`:
+
+```python
+# Access stashes as attributes
+simgr.active
+# [<SimState @ 0x401670>]
+
+# Or as dictionary
+simgr.stashes['active']
+
+# Get one state from a stash
+simgr.one_active  # First state in active stash
+
+# Get mulpyplexed stash (for parallel operations)
+simgr.mp_active
+```
+
+### Standard Stashes
+
+angr uses several standard stashes to categorize states:
+
+<ParamField path="active">
+  States that will be stepped by default
+</ParamField>
+
+<ParamField path="deadended">
+  States that have no successors (reached exit, hit invalid instruction, etc.)
+</ParamField>
+
+<ParamField path="found">
+  States that match the find condition in `explore()`
+</ParamField>
+
+<ParamField path="avoid">
+  States that match the avoid condition in `explore()`
+</ParamField>
+
+<ParamField path="errored">
+  ErrorRecord objects for states that raised exceptions during stepping
+</ParamField>
+
+<ParamField path="unconstrained">
+  States with unconstrained instruction pointers (potential exploitation targets)
+</ParamField>
+
+<ParamField path="unsat">
+  States with unsatisfiable constraints
+</ParamField>
+
+<ParamField path="pruned">
+  States that were pruned for being uninteresting
+</ParamField>
+
+## Basic Execution
+
+### Stepping
+
+Execute one round of symbolic execution:
+
+```python
+# Step all states in active stash
+simgr.step()
+
+# Step a specific stash
+simgr.step(stash='found')
+
+# Step multiple times
+for _ in range(10):
+    simgr.step()
+    if not simgr.active:
+        break
+```
+
+### Running
+
+Run until a completion condition is met:
+
+```python
+# Run until no active states remain
+simgr.run()
+
+# Run for a maximum number of steps
+simgr.run(n=100)
+
+# Run until a condition is met
+simgr.run(until=lambda sm: len(sm.found) > 0)
+```
+
+<ParamField path="stash" type="str" default="active">
+  Which stash to step
+</ParamField>
+
+<ParamField path="n" type="int">
+  Maximum number of steps to take
+</ParamField>
+
+<ParamField path="until" type="callable">
+  Function taking a SimulationManager that returns True when execution should stop
+</ParamField>
+
+## Exploration
+
+The `explore()` method provides a high-level interface for finding paths:
+
+```python
+# Find states that reach a target address
+simgr.explore(find=0x400710)
+
+if simgr.found:
+    solution = simgr.found[0]
+    print(f"Found solution: {solution}")
+```
+
+### Find and Avoid Conditions
+
+The `find` and `avoid` parameters accept:
+
+<Tabs>
+  <Tab title="Address">
+    ```python
+    # Find states at specific address
+    simgr.explore(find=0x400710)
+    ```
+  </Tab>
+  
+  <Tab title="Address List">
+    ```python
+    # Find states at any of these addresses
+    simgr.explore(find=[0x400710, 0x400720, 0x400730])
+    ```
+  </Tab>
+  
+  <Tab title="Function">
+    ```python
+    # Find states matching a condition
+    def found_condition(state):
+        return b"success" in state.posix.dumps(1)  # stdout contains "success"
+    
+    simgr.explore(find=found_condition)
+    ```
+  </Tab>
+</Tabs>
+
+### Explore Options
+
+```python
+simgr.explore(
+    find=0x400710,           # Target address/condition
+    avoid=0x400800,          # Addresses/conditions to avoid
+    find_stash='found',      # Where to put found states
+    avoid_stash='avoid',     # Where to put avoided states  
+    num_find=5,              # Stop after finding this many
+    n=1000                   # Maximum steps
+)
+```
+
+<ParamField path="find" type="int | list | callable">
+  Address(es) or function to find
+</ParamField>
+
+<ParamField path="avoid" type="int | list | callable">
+  Address(es) or function to avoid
+</ParamField>
+
+<ParamField path="find_stash" type="str" default="found">
+  Stash name for states matching find condition
+</ParamField>
+
+<ParamField path="avoid_stash" type="str" default="avoid">
+  Stash name for states matching avoid condition
+</ParamField>
+
+<ParamField path="num_find" type="int" default="1">
+  Stop after finding this many states
+</ParamField>
+
+<ParamField path="n" type="int">
+  Maximum number of steps
+</ParamField>
+
+## Stash Manipulation
+
+### Moving States
+
+```python
+# Move all states from one stash to another
+simgr.move('active', 'stashed')
+
+# Move states matching a condition
+simgr.move('active', 'interesting', 
+           filter_func=lambda s: s.addr == 0x400710)
+
+# Stash/unstash (aliases for move)
+simgr.stash(filter_func=lambda s: s.satisfiable())
+simgr.unstash(from_stash='stashed', to_stash='active')
+
+# Drop states (move to special DROP stash)
+simgr.drop(filter_func=lambda s: not s.satisfiable())
+```
+
+### Filtering
+
+```python
+# Split a stash based on a condition  
+simgr.split(
+    stash_splitter=lambda states: (states[:5], states[5:]),
+    from_stash='active',
+    to_stash='stashed'
+)
+
+# Keep only the first N states
+simgr.split(limit=5, from_stash='active', to_stash='stashed')
+
+# Rank and split states
+simgr.split(
+    state_ranker=lambda s: s.solver.eval(s.regs.rax),
+    limit=10
+)
+```
+
+### Applying Functions
+
+```python
+# Apply a function to each state
+def set_rax(state):
+    state.regs.rax = 0
+    return state
+
+simgr.apply(state_func=set_rax)
+
+# Apply a function to the entire stash
+def filter_states(states):
+    return [s for s in states if s.satisfiable()]
+
+simgr.apply(stash_func=filter_states)
+```
+
+## Merging States
+
+Merge similar states to reduce path explosion:
+
+```python
+# Merge all states in active stash
+simgr.merge()
+
+# Merge with custom merge function
+def custom_merge(*states):
+    # Custom merging logic
+    return states[0].merge(*states[1:])[0]
+
+simgr.merge(merge_func=custom_merge)
+
+# Merge only states with same PC and callstack
+simgr.merge(merge_key=lambda s: (s.addr, tuple(s.callstack)))
+```
+
+<ParamField path="stash" type="str" default="active">
+  Which stash to merge
+</ParamField>
+
+<ParamField path="merge_func" type="callable">
+  Custom function for merging states
+</ParamField>
+
+<ParamField path="merge_key" type="callable">
+  Function returning a key for grouping mergeable states
+</ParamField>
+
+<ParamField path="prune" type="bool" default="True">
+  Prune unsatisfiable states before merging
+</ParamField>
+
+## Exploration Techniques
+
+Exploration techniques modify how the simulation manager steps states:
+
+```python
+import angr
+
+# Use an exploration technique
+simgr.use_technique(angr.exploration_techniques.DFS())
+
+# Multiple techniques can be used together
+simgr.use_technique(angr.exploration_techniques.LoopSeer())
+simgr.use_technique(angr.exploration_techniques.LengthLimiter(max_length=100))
+```
+
+### Common Exploration Techniques
+
+<Tabs>
+  <Tab title="DFS">
+    ```python
+    # Depth-first search
+    simgr.use_technique(angr.exploration_techniques.DFS())
+    ```
+  </Tab>
+  
+  <Tab title="Explorer">
+    ```python
+    # Built-in technique used by explore()
+    tech = angr.exploration_techniques.Explorer(
+        find=0x400710,
+        avoid=0x400800
+    )
+    simgr.use_technique(tech)
+    ```
+  </Tab>
+  
+  <Tab title="LoopSeer">
+    ```python
+    # Detect and handle loops efficiently  
+    simgr.use_technique(angr.exploration_techniques.LoopSeer())
+    ```
+  </Tab>
+  
+  <Tab title="Veritesting">
+    ```python
+    # Hybrid static/dynamic execution
+    simgr.use_technique(angr.exploration_techniques.Veritesting())
+    ```
+  </Tab>
+  
+  <Tab title="Threading">
+    ```python
+    # Parallel execution
+    simgr.use_technique(angr.exploration_techniques.Threading(threads=4))
+    ```
+  </Tab>
+</Tabs>
+
+### Removing Techniques
+
+```python
+tech = angr.exploration_techniques.DFS()
+simgr.use_technique(tech)
+
+# Later, remove it
+simgr.remove_technique(tech)
+```
+
+## Error Handling
+
+The `errored` stash contains ErrorRecord objects:
+
+```python
+if simgr.errored:
+    for error in simgr.errored:
+        print(f"State {error.state} errored with: {error.error}")
+        
+        # Debug the error
+        error.debug()  # Opens debugger at error site
+        
+        # Or re-raise it
+        # error.reraise()
+```
+
+### Configuring Resilience
+
+Control which errors are caught:
+
+```python
+# Catch all angr errors (default)
+simgr = proj.factory.simulation_manager(state, resilience=None)
+
+# Catch no errors
+simgr = proj.factory.simulation_manager(state, resilience=False)  
+
+# Catch many common errors
+simgr = proj.factory.simulation_manager(state, resilience=True)
+
+# Catch specific errors
+simgr = proj.factory.simulation_manager(
+    state,
+    resilience=(angr.errors.SimError, KeyError)
+)
+```
+
+## Advanced Step Control
+
+### Custom Stepping
+
+```python
+# Step with custom successor function
+def my_successors(state):
+    # Custom successor generation
+    return proj.factory.successors(state)
+
+simgr.step(successor_func=my_successors)
+
+# Step with state selection
+simgr.step(selector_func=lambda s: s.addr != 0x400800)
+
+# Step with custom filtering
+simgr.step(filter_func=lambda s: 'interesting' if interesting(s) else None)
+```
+
+### Step Options
+
+You can pass any `project.factory.successors()` options to step:
+
+```python
+simgr.step(
+    opt_level=0,        # VEX optimization level
+    num_inst=5,         # Maximum instructions per step
+    size=100,           # Maximum block size
+    thumb=True          # ARM Thumb mode
+)
+```
+
+## Example: CTF Challenge
+
+```python
+import angr
+import claripy
+
+# Load the binary
+proj = angr.Project('./challenge')
+
+# Create symbolic input
+flag = claripy.BVS('flag', 8 * 32)  # 32-byte flag
+
+# Create state with symbolic stdin
+state = proj.factory.entry_state(stdin=flag)
+
+# Constrain flag to printable characters
+for i in range(32):
+    byte = flag.get_byte(i)
+    state.solver.add(byte >= 0x20)
+    state.solver.add(byte <= 0x7e)
+
+# Create simulation manager
+simgr = proj.factory.simulation_manager(state)
+
+# Explore to find "Correct!" message
+def found_success(state):
+    output = state.posix.dumps(1)  # stdout
+    return b"Correct!" in output
+
+def hit_failure(state):
+    output = state.posix.dumps(1)
+    return b"Wrong!" in output
+
+simgr.explore(
+    find=found_success,
+    avoid=hit_failure,
+    n=1000
+)
+
+# Extract the flag
+if simgr.found:
+    solution = simgr.found[0]
+    flag_value = solution.solver.eval(flag, cast_to=bytes)
+    print(f"Flag: {flag_value}")
+else:
+    print("No solution found")
+    if simgr.errored:
+        print(f"Errors: {len(simgr.errored)}")
+```
+
+## Example: Vulnerability Discovery
+
+```python
+import angr
+
+proj = angr.Project('./vulnerable', auto_load_libs=False)
+
+# Find unconstrained states (potential buffer overflows)
+state = proj.factory.entry_state()
+simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
+
+# Explore with loop limiting
+simgr.use_technique(angr.exploration_techniques.LoopSeer())
+simgr.run(n=500)
+
+# Check for unconstrained instruction pointers
+if simgr.unconstrained:
+    print(f"Found {len(simgr.unconstrained)} potentially exploitable states")
+    
+    for state in simgr.unconstrained:
+        # Check if we can control the instruction pointer
+        if state.solver.symbolic(state.regs.rip):
+            print(f"Controlled IP at {state.history.bbl_addrs[-1]:#x}")
+```
+
+## Example: Path Exploration with Merging
+
+```python
+import angr
+
+proj = angr.Project('./binary')
+state = proj.factory.entry_state()
+simgr = proj.factory.simulation_manager(state)
+
+# Step and merge periodically to reduce path explosion
+for _ in range(100):
+    simgr.step()
+    
+    # Merge states every 10 steps
+    if _ % 10 == 0:
+        simgr.merge()
+        print(f"Step {_}: {len(simgr.active)} active states")
+    
+    if not simgr.active:
+        break
+
+print(f"Final: {len(simgr.deadended)} deadended states")
+```
+
+## See Also
+
+- [SimState](/core-concepts/states)
+- [Symbolic Execution](/core-concepts/symbolic-execution)
+- [Exploration Techniques](/advanced-topics/exploration-techniques)
+- [angr.Project](/core-concepts/projects)

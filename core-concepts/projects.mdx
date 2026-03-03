@@ -1,0 +1,395 @@
+---
+title: angr.Project
+description: The main class for loading and analyzing binaries with angr
+---
+
+The `Project` class is the main entry point for working with angr. It loads binaries, manages their dependencies, and provides access to all of angr's analysis capabilities.
+
+## Loading a Binary
+
+Your first action with angr will always be to load a binary into a Project:
+
+```python
+import angr
+
+proj = angr.Project('/bin/true')
+```
+
+<Note>
+The Project object represents an "initialization image" for the program. When performing execution, you'll work with `SimState` objects representing specific program states.
+</Note>
+
+## Constructor
+
+```python
+Project(
+    thing,
+    default_analysis_mode=None,
+    ignore_functions=None,
+    use_sim_procedures=True,
+    exclude_sim_procedures_func=None,
+    exclude_sim_procedures_list=(),
+    arch=None,
+    simos=None,
+    engine=None,
+    load_options=None,
+    translation_cache=True,
+    selfmodifying_code=False,
+    **kwargs
+)
+```
+
+### Parameters
+
+<ParamField path="thing" type="str | Path | IOBase | cle.Loader">
+  The path to the main executable object to analyze, or a CLE Loader object
+</ParamField>
+
+<ParamField path="default_analysis_mode" type="str" default="symbolic">
+  The mode of analysis to use by default
+</ParamField>
+
+<ParamField path="ignore_functions" type="list[str]">
+  List of function names that should never be stepped into (calls return unconstrained values)
+</ParamField>
+
+<ParamField path="use_sim_procedures" type="bool" default="True">
+  Whether to replace resolved dependencies with simprocedures when available
+</ParamField>
+
+<ParamField path="exclude_sim_procedures_list" type="list[str]">
+  List of functions to NOT wrap with simprocedures
+</ParamField>
+
+<ParamField path="arch" type="str | archinfo.Arch">
+  The target architecture (auto-detected if not specified)
+</ParamField>
+
+<ParamField path="simos" type="str | SimOS">
+  A SimOS class or name to use for this project
+</ParamField>
+
+<ParamField path="translation_cache" type="bool" default="True">
+  If True, cache translated basic blocks rather than re-translating them
+</ParamField>
+
+<ParamField path="selfmodifying_code" type="bool" default="False">
+  Whether to aggressively support self-modifying code. When enabled, emulation will try to read code from the current state instead of original memory
+</ParamField>
+
+<ParamField path="**kwargs">
+  Additional keyword arguments are passed to `cle.Loader`
+</ParamField>
+
+## Basic Properties
+
+First, we have some basic properties about the project:
+
+```python
+import monkeyhex  # format numerical results in hexadecimal
+
+proj.arch
+# <Arch AMD64 (LE)>
+
+proj.entry
+# 0x401670
+
+proj.filename
+# '/bin/true'
+```
+
+### Architecture
+
+<ParamField path="arch" type="archinfo.Arch">
+  An instance of an `archinfo.Arch` object for the program's architecture. Contains:
+  - `arch.bits` - number of bits (32, 64, etc.)
+  - `arch.bytes` - number of bytes
+  - `arch.name` - architecture name (e.g., "AMD64", "ARM")
+  - `arch.memory_endness` - endianness
+</ParamField>
+
+<ParamField path="entry" type="int">
+  The entry point address of the binary
+</ParamField>
+
+<ParamField path="filename" type="str">
+  The absolute filename of the binary
+</ParamField>
+
+## The Loader
+
+The `.loader` property provides access to CLE (CLE Loads Everything), angr's binary loading component:
+
+```python
+proj.loader
+# <Loaded true, maps [0x400000:0x5004000]>
+
+proj.loader.shared_objects
+# {'ld-linux-x86-64.so.2': <ELF Object ld-2.24.so, maps [0x2000000:0x2227167]>,
+#  'libc.so.6': <ELF Object libc-2.24.so, maps [0x1000000:0x13c699f]>}
+
+proj.loader.min_addr
+# 0x400000
+
+proj.loader.max_addr
+# 0x5004000
+
+proj.loader.main_object
+# <ELF Object true, maps [0x400000:0x60721f]>
+```
+
+See the [Binary Loading](/core-concepts/loading) documentation for more details.
+
+## The Factory
+
+The `project.factory` provides convenient constructors for common objects:
+
+### Blocks
+
+Extract a basic block of code from a given address:
+
+```python
+block = proj.factory.block(proj.entry)
+# <Block for 0x401670, 42 bytes>
+
+block.pp()  # pretty-print disassembly
+block.instructions  # number of instructions
+block.instruction_addrs  # list of instruction addresses
+```
+
+### States
+
+Create program states for symbolic execution:
+
+```python
+# State starting at entry point
+state = proj.factory.entry_state()
+
+# Blank state with most data uninitialized
+state = proj.factory.blank_state()
+
+# State ready to execute through initializers
+state = proj.factory.full_init_state()
+
+# State ready to execute a specific function
+state = proj.factory.call_state(addr, arg1, arg2)
+```
+
+See [SimState and Program State](/core-concepts/states) for more details.
+
+### Simulation Managers
+
+Create simulation managers for controlling execution:
+
+```python
+simgr = proj.factory.simulation_manager(state)
+# <SimulationManager with 1 active>
+```
+
+See [SimulationManager](/core-concepts/simulation) for more details.
+
+## Hooking
+
+You can replace code at specific addresses with custom Python functions or SimProcedures:
+
+### Basic Hooking
+
+```python
+# Hook with a SimProcedure
+stub_func = angr.SIM_PROCEDURES['stubs']['ReturnUnconstrained']
+proj.hook(0x10000, stub_func())
+
+# Hook with a decorator
+@proj.hook(0x20000, length=5)
+def my_hook(state):
+    state.regs.rax = 1
+
+# Check if address is hooked
+proj.is_hooked(0x10000)  # True
+
+# Get the hook at an address
+proj.hooked_by(0x10000)  # <ReturnUnconstrained>
+
+# Remove a hook
+proj.unhook(0x10000)
+```
+
+<ParamField path="addr" type="int">
+  The address to hook
+</ParamField>
+
+<ParamField path="hook" type="SimProcedure | callable">
+  A SimProcedure instance or function to run at the address. If a function is provided, it should take a state as its argument
+</ParamField>
+
+<ParamField path="length" type="int" default="0">
+  Number of bytes to skip after the hook executes
+</ParamField>
+
+<ParamField path="replace" type="bool | None" default="False">
+  Control behavior when address is already hooked:
+  - `True`: silently replace the hook
+  - `False`: warn and do not replace
+  - `None`: warn and replace
+</ParamField>
+
+### Hook Symbols
+
+Hook by symbol name instead of address:
+
+```python
+proj.hook_symbol('strcmp', my_strcmp_implementation)
+
+# Check if symbol is hooked
+proj.is_symbol_hooked('strcmp')
+
+# Get the hook for a symbol
+proj.symbol_hooked_by('strcmp')
+
+# Remove a symbol hook
+proj.unhook_symbol('strcmp')
+```
+
+## Analyses
+
+angr comes with several built-in analyses:
+
+```python
+# Control Flow Graph (fast)
+cfg = proj.analyses.CFGFast()
+
+# Control Flow Graph (accurate, slower)
+cfg = proj.analyses.CFGEmulated()
+
+# Data Dependency Graph
+ddg = proj.analyses.DDG()
+
+# Variable Recovery
+vr = proj.analyses.VariableRecoveryFast()
+```
+
+Access the analyses hub:
+
+```python
+proj.analyses
+# <AnalysesHub with plugins: BackwardSlice, CFG, CFGEmulated, ...>
+```
+
+See the API documentation for specific analyses.
+
+## Knowledge Base
+
+The knowledge base stores information learned during analysis:
+
+```python
+# Default knowledge base
+kb = proj.kb
+
+# Get or create a named knowledge base
+kb = proj.get_kb('my_analysis')
+
+# Access functions from CFG
+kb.functions
+kb.functions[addr]  # Get function at address
+```
+
+## Loading Shellcode
+
+You can load raw shellcode instead of a binary file:
+
+```python
+import angr
+
+# Load assembly code
+proj = angr.load_shellcode(
+    "mov rax, 1; ret",
+    arch='amd64',
+    start_offset=0,
+    load_address=0x4000
+)
+
+# Load bytecode
+shellcode = b"\x48\xc7\xc0\x01\x00\x00\x00\xc3"
+proj = angr.load_shellcode(
+    shellcode,
+    arch='amd64',
+    load_address=0x4000
+)
+```
+
+<ParamField path="shellcode" type="bytes | str">
+  The data to load, either as a bytestring of instructions or a string of assembly text
+</ParamField>
+
+<ParamField path="arch" type="str | archinfo.Arch">
+  The architecture to use
+</ParamField>
+
+<ParamField path="start_offset" type="int" default="0">
+  The offset into the data to start analysis
+</ParamField>
+
+<ParamField path="load_address" type="int" default="0">
+  The address to place the data in memory
+</ParamField>
+
+<ParamField path="thumb" type="bool" default="False">
+  Whether this is ARM Thumb shellcode
+</ParamField>
+
+## Execution API
+
+angr provides a simple execution API in the style of Triton and Manticore:
+
+```python
+# Execute from entry point
+pg = proj.execute()
+
+# Execute from a specific state
+state = proj.factory.entry_state()
+pg = proj.execute(state)
+
+# Execute with custom arguments
+pg = proj.execute(args=['./program', 'arg1'])
+
+# Terminate execution
+proj.terminate_execution()
+```
+
+<Warning>
+This execution API is designed for simple use cases. For more complex symbolic execution, use SimulationManager directly.
+</Warning>
+
+## Example Usage
+
+```python
+import angr
+
+# Load a binary
+proj = angr.Project('./vulnerable_binary', auto_load_libs=False)
+
+# Get basic information
+print(f"Architecture: {proj.arch.name}")
+print(f"Entry point: {proj.entry:#x}")
+print(f"Binary: {proj.filename}")
+
+# Create an initial state
+state = proj.factory.entry_state()
+
+# Create a simulation manager
+simgr = proj.factory.simulation_manager(state)
+
+# Explore to find a target address
+simgr.explore(find=0x400710)
+
+if simgr.found:
+    solution_state = simgr.found[0]
+    print("Found solution!")
+```
+
+## See Also
+
+- [Binary Loading with CLE](/core-concepts/loading)
+- [SimState and Program State](/core-concepts/states)
+- [SimulationManager](/core-concepts/simulation)
+- [Symbolic Execution](/core-concepts/symbolic-execution)

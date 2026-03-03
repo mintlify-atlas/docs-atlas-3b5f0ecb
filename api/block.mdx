@@ -1,0 +1,393 @@
+---
+title: Block
+description: Represents a basic block of binary code with disassembly and lifting capabilities
+---
+
+The `Block` class represents a basic block in a binary program, providing access to disassembly, VEX IR translation, and instruction information.
+
+## Class Signature
+
+```python
+class Block(Serializable):
+    def __init__(
+        self,
+        addr,
+        project=None,
+        arch: Arch | None = None,
+        size=None,
+        max_size=None,
+        byte_string=None,
+        thumb=False,
+        backup_state=None,
+        extra_stop_points=None,
+        opt_level=None,
+        num_inst=None,
+        traceflags=0,
+        strict_block_end=None,
+        collect_data_refs=False,
+        cross_insn_opt=True,
+        load_from_ro_regions=False,
+        const_prop=False,
+        initial_regs=None,
+        skip_stmts=False,
+    )
+```
+
+## Parameters
+
+<ParamField path="addr" type="int">
+  The address of the start of the block.
+</ParamField>
+
+<ParamField path="project" type="Project">
+  The angr project this block belongs to.
+</ParamField>
+
+<ParamField path="arch" type="Arch">
+  The architecture of the block. Either `project` or `arch` must be specified.
+</ParamField>
+
+<ParamField path="size" type="int">
+  The size of the block in bytes.
+</ParamField>
+
+<ParamField path="max_size" type="int" default="4096">
+  The maximum size of the block in bytes.
+</ParamField>
+
+<ParamField path="byte_string" type="bytes">
+  The bytes to lift instead of reading from project memory.
+</ParamField>
+
+<ParamField path="thumb" type="bool" default="False">
+  Whether this is ARM Thumb mode.
+</ParamField>
+
+<ParamField path="backup_state" type="SimState">
+  A state to read bytes from instead of using project memory.
+</ParamField>
+
+<ParamField path="extra_stop_points" type="list[int]">
+  Additional addresses where the block should stop.
+</ParamField>
+
+<ParamField path="opt_level" type="int">
+  The VEX optimization level (0-2).
+</ParamField>
+
+<ParamField path="num_inst" type="int">
+  The maximum number of instructions to lift.
+</ParamField>
+
+<ParamField path="traceflags" type="int" default="0">
+  Traceflags to pass to VEX.
+</ParamField>
+
+<ParamField path="strict_block_end" type="bool">
+  Whether to strictly adhere to block end conditions.
+</ParamField>
+
+<ParamField path="collect_data_refs" type="bool" default="False">
+  Whether to collect data references during lifting.
+</ParamField>
+
+<ParamField path="cross_insn_opt" type="bool" default="True">
+  Whether to perform cross-instruction optimization.
+</ParamField>
+
+<ParamField path="load_from_ro_regions" type="bool" default="False">
+  Whether to load from read-only memory regions.
+</ParamField>
+
+<ParamField path="const_prop" type="bool" default="False">
+  Whether to perform constant propagation during lifting.
+</ParamField>
+
+<ParamField path="skip_stmts" type="bool" default="False">
+  Whether to skip generating VEX statements (faster for metadata only).
+</ParamField>
+
+## Attributes
+
+<ResponseField name="addr" type="int">
+  The address of the block.
+</ResponseField>
+
+<ResponseField name="arch" type="Arch">
+  The architecture of the block.
+</ResponseField>
+
+<ResponseField name="size" type="int">
+  The size of the block in bytes.
+</ResponseField>
+
+<ResponseField name="thumb" type="bool">
+  Whether this block is in ARM Thumb mode.
+</ResponseField>
+
+<ResponseField name="BLOCK_MAX_SIZE" type="int" default="4096">
+  Class constant for maximum block size.
+</ResponseField>
+
+## Properties
+
+<Accordion title="vex">
+  **Type:** `IRSB | PcodeIRSB`
+
+  The VEX or Pcode intermediate representation of this block.
+
+  ```python
+  block = proj.factory.block(0x400000)
+  print(block.vex.pp())  # Pretty-print the VEX IR
+  ```
+</Accordion>
+
+<Accordion title="vex_nostmt">
+  **Type:** `IRSB | PcodeIRSB`
+
+  The VEX IR without statements (faster, for metadata only).
+</Accordion>
+
+<Accordion title="capstone">
+  **Type:** `CapstoneBlock`
+
+  The Capstone disassembly of this block.
+
+  ```python
+  for insn in block.capstone.insns:
+      print(f"{insn.address:#x}: {insn.mnemonic} {insn.op_str}")
+  ```
+</Accordion>
+
+<Accordion title="pcode">
+  **Type:** `PCodeBlock`
+
+  The P-Code disassembly of this block (for P-Code architectures).
+</Accordion>
+
+<Accordion title="disassembly">
+  **Type:** `DisassemblerBlock`
+
+  A disassembly using whatever disassembler is available (Capstone or P-Code).
+</Accordion>
+
+<Accordion title="bytes">
+  **Type:** `bytes | None`
+
+  The raw bytes of the block.
+
+  ```python
+  print(block.bytes.hex())
+  ```
+</Accordion>
+
+<Accordion title="instructions">
+  **Type:** `int`
+
+  The number of instructions in the block.
+</Accordion>
+
+<Accordion title="instruction_addrs">
+  **Type:** `list[int]`
+
+  List of addresses for each instruction in the block.
+
+  ```python
+  for addr in block.instruction_addrs:
+      print(f"Instruction at {addr:#x}")
+  ```
+</Accordion>
+
+<Accordion title="codenode">
+  **Type:** `BlockNode`
+
+  A CodeNode representation of this block for use in CFG.
+</Accordion>
+
+## Methods
+
+<Accordion title="pp()">
+  **Signature:**
+  ```python
+  def pp(self, **kwargs)
+  ```
+
+  Pretty-print a disassembly of the block.
+
+  ```python
+  block = proj.factory.block(0x400000)
+  block.pp()
+  ```
+</Accordion>
+
+<Accordion title="set_initial_regs()">
+  **Signature:**
+  ```python
+  def set_initial_regs(self)
+  ```
+
+  Set up initial registers for data reference collection.
+</Accordion>
+
+<Accordion title="reset_initial_regs()">
+  **Signature:**
+  ```python
+  @staticmethod
+  def reset_initial_regs()
+  ```
+
+  Reset the initial register values.
+</Accordion>
+
+## DisassemblerBlock Classes
+
+These helper classes represent disassembled blocks:
+
+### DisassemblerBlock
+
+```python
+class DisassemblerBlock:
+    addr: int
+    arch: Arch
+    insns: list[DisassemblerInsn]
+    thumb: bool
+```
+
+<Accordion title="pp()">
+  Print the block to stdout.
+</Accordion>
+
+### DisassemblerInsn
+
+```python
+class DisassemblerInsn:
+    @property
+    def size(self) -> int
+    @property
+    def address(self) -> int
+    @property
+    def mnemonic(self) -> str
+    @property
+    def op_str(self) -> str
+```
+
+### CapstoneBlock
+
+A Capstone-specific implementation of `DisassemblerBlock`.
+
+### CapstoneInsn
+
+A Capstone-specific implementation of `DisassemblerInsn`.
+
+```python
+class CapstoneInsn(DisassemblerInsn):
+    insn: capstone.CsInsn
+```
+
+## SootBlock
+
+For Java/Soot analysis, there's a separate `SootBlock` class:
+
+```python
+class SootBlock:
+    def __init__(self, addr, *, project: Project, arch: Arch)
+```
+
+<ResponseField name="addr" type="SootAddressDescriptor">
+  The Soot address descriptor.
+</ResponseField>
+
+<ResponseField name="arch" type="Arch">
+  The architecture (ArchSoot).
+</ResponseField>
+
+<ResponseField name="soot" type="SootIRSB">
+  The Soot IR representation.
+</ResponseField>
+
+<ResponseField name="size" type="int">
+  The number of Soot statements.
+</ResponseField>
+
+## Example Usage
+
+```python
+import angr
+
+proj = angr.Project('/bin/ls')
+
+# Create a block at the entry point
+block = proj.factory.block(proj.entry)
+
+# Basic information
+print(f"Block at {block.addr:#x}")
+print(f"Size: {block.size} bytes")
+print(f"Instructions: {block.instructions}")
+
+# Disassembly
+print("\nDisassembly:")
+block.pp()
+
+# Alternative: Capstone disassembly
+for insn in block.capstone.insns:
+    print(f"{insn.address:#x}: {insn.mnemonic} {insn.op_str}")
+
+# VEX IR
+print("\nVEX IR:")
+print(block.vex.pp())
+
+# Get instruction addresses
+for i, addr in enumerate(block.instruction_addrs):
+    print(f"Instruction {i} at {addr:#x}")
+
+# Get raw bytes
+print(f"\nBytes: {block.bytes.hex()}")
+
+# Create block from custom bytes
+custom_block = proj.factory.block(
+    addr=0x1000,
+    byte_string=b'\x90\x90\x90',  # NOP instructions
+    size=3
+)
+
+# Limit number of instructions
+limited_block = proj.factory.block(
+    addr=proj.entry,
+    num_inst=5  # Only lift first 5 instructions
+)
+
+print(f"Limited block has {limited_block.instructions} instructions")
+```
+
+## Advanced Usage
+
+```python
+# Use optimization levels
+optimized_block = proj.factory.block(
+    addr=0x400000,
+    opt_level=2  # Maximum VEX optimization
+)
+
+# Collect data references
+data_ref_block = proj.factory.block(
+    addr=0x400000,
+    collect_data_refs=True
+)
+
+# Use a backup state for patched code
+state = proj.factory.blank_state()
+state.memory.store(0x400000, b'\x90\x90\x90\x90')
+patched_block = proj.factory.block(
+    addr=0x400000,
+    backup_state=state
+)
+
+# Skip VEX statements for faster metadata access
+fast_block = proj.factory.block(
+    addr=0x400000,
+    skip_stmts=True
+)
+print(f"Instructions: {fast_block.instructions}")
+print(f"Addrs: {fast_block.instruction_addrs}")
+# fast_block.vex would still trigger full lifting
+```

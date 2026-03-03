@@ -1,0 +1,604 @@
+---
+title: Hooks and SimProcedures
+description: Replace functions with custom implementations using hooks and SimProcedures
+---
+
+Hooks and SimProcedures allow you to replace functions in the binary with custom Python implementations. This is essential for modeling library functions, stubbing out complex code, or injecting custom behavior during symbolic execution.
+
+## Hooks vs SimProcedures
+
+**Hooks** are simple function replacements - you provide a callable that receives the state and modifies it.
+
+**SimProcedures** are classes with calling convention support, argument parsing, and control flow methods. They're the recommended approach for anything beyond trivial replacements.
+
+## Quick Start: Basic Hook
+
+Replace a function with a simple callable:
+
+```python
+import angr
+
+project = angr.Project('/path/to/binary')
+
+def skip_function(state):
+    """Skip a function by setting return value"""
+    state.regs.rax = 42  # Set return value
+
+# Hook at address
+project.hook(0x401234, skip_function, length=5)
+```
+
+## SimProcedure Basics
+
+### Core Concept
+
+SimProcedures are classes that inherit from `SimProcedure` and implement a `run()` method (angr/sim_procedure.py:35):
+
+```python
+from angr import SimProcedure
+
+class MyProcedure(SimProcedure):
+    def run(self, arg1, arg2):
+        # Access state
+        print(f"Called at {self.state.addr:#x}")
+        
+        # Return value
+        return arg1 + arg2
+```
+
+### Accessing Arguments
+
+argr automatically extracts arguments based on the calling convention:
+
+```python
+class ReadInt(SimProcedure):
+    def run(self, buffer_ptr, size):
+        # Arguments are automatically parsed as BVs
+        size_concrete = self.state.solver.eval(size)
+        buffer_addr = self.state.solver.eval(buffer_ptr)
+        
+        # Read from memory
+        data = self.state.memory.load(buffer_addr, size_concrete)
+        return data
+```
+
+<Note>
+The number of arguments is automatically determined from the `run()` method signature. Arguments are extracted from registers/stack based on the calling convention.
+</Note>
+
+### Returning Values
+
+Return values are automatically placed in the return register:
+
+```python
+class GetRandom(SimProcedure):
+    def run(self):
+        # Return symbolic value
+        return self.state.solver.BVS('random', 32)
+
+class GetConstant(SimProcedure):
+    def run(self):
+        # Return concrete value
+        return 0x12345678
+```
+
+## SimProcedure Architecture
+
+### Class Variables
+
+Control SimProcedure behavior with class variables (angr/sim_procedure.py:60-70):
+
+```python
+class MyProcedure(SimProcedure):
+    # Function never returns (like exit())
+    NO_RET = False
+    
+    # Return behavior depends on arguments
+    DYNAMIC_RET = False
+    
+    # Adds exits other than return
+    ADDS_EXITS = False
+    
+    # Is this a function?
+    IS_FUNCTION = True
+    
+    # For continuation support
+    local_vars = ('counter', 'state_var')
+```
+
+### Instance Variables
+
+Access execution context through instance variables (angr/sim_procedure.py:99-112):
+
+```python
+class IntrospectiveProcedure(SimProcedure):
+    def run(self):
+        # Execution address
+        print(f"Executing at {self.addr:#x}")
+        
+        # Access state
+        rip = self.state.regs.rip
+        
+        # Calling convention
+        print(f"Using CC: {self.cc}")
+        
+        # Arguments (already parsed)
+        print(f"Arguments: {self.arguments}")
+        
+        # Return address
+        print(f"Will return to {self.ret_to:#x}")
+```
+
+## Advanced Features
+
+### Inline Calls
+
+Call another SimProcedure from within your procedure:
+
+```python
+class Caller(SimProcedure):
+    def run(self, filename_ptr):
+        # Call another SimProcedure inline
+        strlen_result = self.inline_call(
+            procedures.libc.strlen,
+            filename_ptr
+        )
+        
+        length = strlen_result.ret_expr
+        return length
+```
+
+### Calling Functions
+
+Call back into the binary using `self.call()`:
+
+```python
+class CallbackUser(SimProcedure):
+    # Define local variables for continuation
+    local_vars = ('callback_addr', 'user_data')
+    
+    def run(self, callback_ptr, data):
+        # Save state in local vars
+        self.callback_addr = callback_ptr
+        self.user_data = data
+        
+        # Call the callback function
+        self.call(
+            callback_ptr,
+            [data, 0x1234],  # Arguments
+            continue_at='after_callback'  # Continuation method
+        )
+    
+    def after_callback(self):
+        """Called when callback returns"""
+        # Access return value
+        result = self.call_ret_expr
+        
+        # Access saved local vars
+        print(f"Callback {self.callback_addr:#x} returned {result}")
+        
+        return result
+```
+
+<Warning>
+When using `self.call()`, you must define `local_vars` to list any instance variables you want preserved across the continuation.
+</Warning>
+
+### Jumping
+
+Transfer control to another address:
+
+```python
+class Dispatcher(SimProcedure):
+    def run(self, choice):
+        if self.state.solver.eval(choice) == 1:
+            self.jump(0x401234, jumpkind='Ijk_Boring')
+        else:
+            self.jump(0x401567, jumpkind='Ijk_Boring')
+```
+
+### Exiting
+
+Terminate the program:
+
+```python
+class Exit(SimProcedure):
+    NO_RET = True  # Never returns
+    
+    def run(self, exit_code):
+        self.exit(exit_code)
+```
+
+## Memory Operations
+
+### Reading Memory
+
+```python
+class MemReader(SimProcedure):
+    def run(self, addr, size):
+        # Concrete read
+        addr_concrete = self.state.solver.eval(addr)
+        size_concrete = self.state.solver.eval(size)
+        data = self.state.memory.load(addr_concrete, size_concrete)
+        
+        # Symbolic read
+        data_symbolic = self.state.memory.load(addr, size)
+        
+        return data
+```
+
+### Writing Memory
+
+```python
+class MemWriter(SimProcedure):
+    def run(self, addr, value):
+        # Write BV to memory
+        self.state.memory.store(addr, value)
+        
+        # Write concrete bytes
+        self.state.memory.store(
+            addr,
+            self.state.solver.BVV(b'HELLO', 5*8)
+        )
+        
+        return 0
+```
+
+### String Operations
+
+```python
+class StringOps(SimProcedure):
+    def run(self, str_ptr):
+        # Load null-terminated string
+        max_len = 256
+        string_bv = self.state.memory.load(
+            str_ptr,
+            max_len,
+            endness='Iend_BE'
+        )
+        
+        # Find null terminator
+        for i in range(max_len):
+            byte = self.state.memory.load(str_ptr + i, 1)
+            if self.state.solver.eval(byte) == 0:
+                actual_length = i
+                break
+        
+        return actual_length
+```
+
+## Hooking Strategies
+
+### Hook by Address
+
+```python
+# Hook specific address
+project.hook(0x401234, MyProcedure())
+
+# Hook with length (skip N bytes)
+project.hook(0x401234, MyProcedure(), length=5)
+```
+
+### Hook by Symbol
+
+```python
+# Hook by function name
+project.hook_symbol('malloc', MyMalloc())
+project.hook_symbol('free', MyFree())
+```
+
+### Conditional Hooks
+
+```python
+class ConditionalHook(SimProcedure):
+    def run(self, arg):
+        # Check condition
+        if self.state.solver.eval(arg) > 100:
+            # Execute custom behavior
+            return 0xDEADBEEF
+        else:
+            # Execute original code
+            # (Remove hook and re-execute)
+            self.project.unhook(self.addr)
+            return None  # Fall through to original
+```
+
+## Real-World Examples
+
+### Custom malloc Implementation
+
+```python
+import angr
+from angr import SimProcedure
+
+class MyMalloc(SimProcedure):
+    """Custom malloc with tracking"""
+    
+    def run(self, size):
+        # Get concrete size
+        size_concrete = self.state.solver.eval(size)
+        
+        # Allocate from heap
+        addr = self.state.heap.allocate(size_concrete)
+        
+        # Track allocation
+        if not hasattr(self.state.globals, 'allocations'):
+            self.state.globals['allocations'] = {}
+        
+        self.state.globals['allocations'][addr] = {
+            'size': size_concrete,
+            'addr': self.state.addr
+        }
+        
+        return addr
+
+class MyFree(SimProcedure):
+    """Custom free with validation"""
+    
+    def run(self, ptr):
+        ptr_concrete = self.state.solver.eval(ptr)
+        
+        # Check if pointer was allocated
+        allocations = self.state.globals.get('allocations', {})
+        
+        if ptr_concrete not in allocations:
+            print(f"[!] Free of unallocated pointer {ptr_concrete:#x}")
+            # Could add constraint to mark invalid
+            
+        else:
+            # Free the memory
+            self.state.heap.free(ptr_concrete)
+            del allocations[ptr_concrete]
+        
+        return 0
+```
+
+### File I/O Simulation
+
+```python
+class MyFopen(SimProcedure):
+    def run(self, filename_ptr, mode_ptr):
+        # Read filename string
+        filename = self.state.mem[filename_ptr].string.concrete
+        mode = self.state.mem[mode_ptr].string.concrete
+        
+        # Create symbolic file content
+        if filename == b'/flag':
+            # Create symbolic file
+            content = self.state.solver.BVS('flag_content', 8*100)
+            file_obj = angr.storage.SimFile(
+                filename,
+                content=content
+            )
+        else:
+            # Empty file
+            file_obj = angr.storage.SimFile(filename)
+        
+        # Register file with POSIX plugin
+        fd = self.state.posix.open(filename, mode)
+        
+        return fd
+
+class MyFread(SimProcedure):
+    def run(self, dst_ptr, size, count, fd):
+        # Calculate bytes to read
+        total_bytes = size * count
+        
+        # Read from file descriptor
+        data = self.state.posix.read(fd, total_bytes)
+        
+        # Write to destination
+        self.state.memory.store(dst_ptr, data)
+        
+        return count  # Return number of items read
+```
+
+### System Call Stubbing
+
+```python
+class MyGetpid(SimProcedure):
+    """Return consistent PID"""
+    
+    def run(self):
+        return 0x1337
+
+class MyTime(SimProcedure):
+    """Return symbolic time"""
+    
+    def run(self, tloc_ptr):
+        # Create symbolic timestamp
+        timestamp = self.state.solver.BVS('timestamp', 64)
+        
+        # Store to pointer if not NULL
+        if not self.state.solver.is_true(tloc_ptr == 0):
+            self.state.memory.store(tloc_ptr, timestamp)
+        
+        return timestamp
+```
+
+## Prototype Specification
+
+Define function signatures for correct argument parsing:
+
+```python
+class TypedProcedure(SimProcedure):
+    def __init__(self, **kwargs):
+        super().__init__(
+            prototype='int my_func(char *str, int len)',
+            **kwargs
+        )
+    
+    def run(self, str_ptr, length):
+        # Arguments parsed according to prototype
+        return 0
+```
+
+<Accordion title="Advanced Prototype Usage">
+```python
+from angr.calling_conventions import SimTypeFunction, SimTypePointer, SimTypeInt
+
+class ComplexProcedure(SimProcedure):
+    def __init__(self, **kwargs):
+        # Build prototype programmatically
+        prototype = SimTypeFunction(
+            args=[
+                SimTypePointer(SimTypeInt()),  # int*
+                SimTypeInt(signed=True),        # int
+            ],
+            returnty=SimTypeInt(signed=False)  # unsigned int
+        )
+        super().__init__(prototype=prototype, **kwargs)
+```
+</Accordion>
+
+## Variadic Arguments
+
+Handle functions with variable arguments:
+
+```python
+class MyPrintf(SimProcedure):
+    def run(self, fmt_ptr):
+        # Fixed argument: format string
+        fmt = self.state.mem[fmt_ptr].string.concrete
+        
+        # Variable arguments
+        args = []
+        arg_index = 0
+        
+        # Parse format string to determine arg count
+        import re
+        specifiers = re.findall(b'%[dxs]', fmt)
+        
+        for spec in specifiers:
+            if spec == b'%d' or spec == b'%x':
+                arg = self.va_arg(self.state.arch.int_type)
+            elif spec == b'%s':
+                str_ptr = self.va_arg(self.state.arch.ptr_type)
+                arg = self.state.mem[str_ptr].string.concrete
+            args.append(arg)
+            arg_index += 1
+        
+        # Simulate printf
+        output = fmt % tuple(args)
+        self.state.posix.write(1, output, len(output))
+        
+        return len(output)
+```
+
+## Debugging SimProcedures
+
+### Logging
+
+```python
+import logging
+from angr import SimProcedure
+
+l = logging.getLogger(__name__)
+
+class DebugProcedure(SimProcedure):
+    def run(self, arg1, arg2):
+        l.debug("Called at %#x with args %s, %s", 
+                self.addr, arg1, arg2)
+        
+        # Check argument constraints
+        l.debug("arg1 constraints: %s", 
+                self.state.solver.constraints)
+        
+        result = arg1 + arg2
+        l.debug("Returning %s", result)
+        return result
+```
+
+### Inspection
+
+Use breakpoints to inspect SimProcedure execution:
+
+```python
+class InspectedProcedure(SimProcedure):
+    def run(self, arg):
+        # Set breakpoint before procedure
+        def before_hook(state):
+            print(f"Calling procedure with arg: {arg}")
+        
+        self.state.inspect.b(
+            'simprocedure',
+            when=angr.BP_BEFORE,
+            simprocedure_name='InspectedProcedure',
+            action=before_hook
+        )
+        
+        return arg * 2
+```
+
+## Best Practices
+
+<Steps>
+
+### Use SimProcedures Over Hooks
+
+Prefer SimProcedures for anything beyond trivial replacements. They handle calling conventions automatically.
+
+### Handle Both Symbolic and Concrete
+
+Always check if values are symbolic before evaluating:
+
+```python
+def run(self, ptr):
+    if self.state.solver.symbolic(ptr):
+        # Handle symbolic case
+        pass
+    else:
+        # Handle concrete case  
+        addr = self.state.solver.eval(ptr)
+```
+
+### Set NO_RET Appropriately
+
+```python
+class ExitProcedure(SimProcedure):
+    NO_RET = True  # Function never returns
+    
+    def run(self, code):
+        self.exit(code)
+```
+
+### Use Symbolic Returns When Appropriate
+
+```python
+class UnknownFunction(SimProcedure):
+    def __init__(self, **kwargs):
+        super().__init__(symbolic_return=True, **kwargs)
+    
+    def run(self, arg):
+        # Return will be symbolic
+        return self.state.solver.BVS('unknown_ret', 32)
+```
+
+</Steps>
+
+## Reference
+
+### Key Methods
+
+| Method | Purpose | Signature |
+|--------|---------|----------|
+| `run(*args)` | Main implementation | Override with your logic |
+| `inline_call(proc, *args)` | Call another procedure | Returns procedure instance |
+| `call(addr, args, continue_at)` | Call binary function | Continue at named method |
+| `ret(expr)` | Return from procedure | Optional return value |
+| `jump(addr, jumpkind)` | Jump to address | Transfer control |
+| `exit(code)` | Terminate program | Exit with code |
+| `va_arg(ty, index)` | Get variadic arg | Variable arguments |
+
+### Important Instance Variables
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `self.state` | SimState | Current state |
+| `self.addr` | int | Procedure address |
+| `self.arguments` | list | Parsed arguments |
+| `self.cc` | SimCC | Calling convention |
+| `self.ret_to` | int | Return address |
+| `self.ret_expr` | BV | Return value |
+| `self.call_ret_expr` | BV | Return from call() |
+| `self.project` | Project | angr project |

@@ -1,0 +1,333 @@
+---
+title: DDG (Data Dependence Graph)
+description: API reference for angr's data dependence graph analysis
+---
+
+The `DDG` (Data Dependence Graph) analysis is a fast data dependence graph directly generated from CFG analysis results. It tracks simple data dependencies through register and memory accesses.
+
+<Warning>
+  This is a **fast but imprecise** analysis. There is no guarantee for soundness or accuracy. For better data dependence analysis, consider using VFG (Value-Flow Graph) built on top of Value-Set Analysis.
+</Warning>
+
+## Constructor
+
+```python
+DDG(
+    cfg,
+    start=None,
+    call_depth=None,
+    block_addrs=None
+)
+```
+
+<ParamField path="cfg" type="CFGEmulated" required>
+  Control flow graph. Must have `keep_state=True` and state options including `angr.options.refs` to store memory, register, and temporary value accesses.
+</ParamField>
+
+<ParamField path="start" type="int | None">
+  An address specifying where to start the generation of this data dependence graph. Defaults to the project entry point.
+</ParamField>
+
+<ParamField path="call_depth" type="int | None">
+  A non-negative integer specifying how deep to track in the call tree. `None` disables call depth limit.
+</ParamField>
+
+<ParamField path="block_addrs" type="iterable | None">
+  A collection of block addresses that the DDG analysis should be performed on. If `None`, all blocks are analyzed.
+</ParamField>
+
+## Required CFG Configuration
+
+The DDG analysis requires a CFGEmulated with specific configuration:
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+
+# Generate CFG with required options
+cfg = project.analyses.CFGEmulated(
+    keep_state=True,
+    state_add_options=angr.options.refs
+)
+
+# Now DDG can be generated
+ddg = project.analyses.DDG(cfg=cfg)
+```
+
+## Properties
+
+<ResponseField name="graph" type="networkx.DiGraph">
+  A NetworkX DiGraph representing the dependence relations between statements. Nodes are `CodeLocation` objects.
+</ResponseField>
+
+<ResponseField name="data_graph" type="networkx.DiGraph">
+  The data dependence graph. Nodes are `ProgramVariable` objects representing variables at specific code locations.
+</ResponseField>
+
+<ResponseField name="simplified_data_graph" type="networkx.DiGraph">
+  A simplified version of the data graph with transitive dependencies removed.
+</ResponseField>
+
+<ResponseField name="ast_graph" type="networkx.DiGraph">
+  A mapping of `ProgramVariable` objects to AST representations.
+</ResponseField>
+
+<ResponseField name="view" type="DDGView">
+  A high-level view interface for querying the data dependence graph.
+</ResponseField>
+
+<ResponseField name="simple_view" type="DDGView">
+  A view interface using the simplified data graph.
+</ResponseField>
+
+## Methods
+
+### pp()
+
+Pretty print the data dependence graph.
+
+```python
+ddg.pp()
+```
+
+### get_predecessors(code_location)
+
+Get all predecessors of a code location in the DDG.
+
+<ParamField path="code_location" type="CodeLocation" required>
+  The code location to query.
+</ParamField>
+
+**Returns:** A list of predecessor `CodeLocation` objects.
+
+```python
+from angr.code_location import CodeLocation
+
+loc = CodeLocation(0x401000, 5)
+predecessors = ddg.get_predecessors(loc)
+```
+
+### function_dependency_graph(func)
+
+Get a dependency graph for a specific function.
+
+<ParamField path="func" type="Function" required>
+  The `Function` object from the CFG function manager.
+</ParamField>
+
+**Returns:** A `networkx.DiGraph` instance representing dependencies within the function, or `None` if not found.
+
+```python
+func = cfg.functions['main']
+func_ddg = ddg.function_dependency_graph(func)
+```
+
+### data_sub_graph(pv, simplified=True, killing_edges=False, excluding_types=None)
+
+Get a subgraph from the data graph starting from a program variable.
+
+<ParamField path="pv" type="ProgramVariable" required>
+  The starting program variable.
+</ParamField>
+
+<ParamField path="simplified" type="bool" default="True">
+  When `True`, use the simplified data graph; otherwise use the full data graph.
+</ParamField>
+
+<ParamField path="killing_edges" type="bool" default="False">
+  Whether to include killing edges (overwrite dependencies).
+</ParamField>
+
+<ParamField path="excluding_types" type="iterable | None">
+  Edge types to exclude from the subgraph.
+</ParamField>
+
+**Returns:** A `networkx.MultiDiGraph` subgraph.
+
+## Example Usage
+
+### Basic DDG Analysis
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+
+# Generate CFG with state tracking
+cfg = project.analyses.CFGEmulated(
+    keep_state=True,
+    state_add_options=angr.options.refs
+)
+
+# Generate DDG
+ddg = project.analyses.DDG(cfg=cfg)
+
+# Print statistics
+print(f"Nodes in statement graph: {len(ddg.graph.nodes())}")
+print(f"Edges in statement graph: {len(ddg.graph.edges())}")
+print(f"Nodes in data graph: {len(ddg.data_graph.nodes())}")
+print(f"Edges in data graph: {len(ddg.data_graph.edges())}")
+```
+
+### Exploring Dependencies
+
+```python
+# Iterate through data dependencies
+for src, dst, data in ddg.data_graph.edges(data=True):
+    dep_type = data.get('type', 'unknown')
+    print(f"{src} -> {dst} [{dep_type}]")
+```
+
+### Using the View Interface
+
+```python
+# Access dependencies for a specific instruction
+view = ddg.view
+
+# Get definitions at an instruction address
+insn_view = view[0x401234]
+definitions = insn_view.definitions
+
+for def_item in definitions:
+    print(f"Definition: {def_item}")
+    print(f"  Depends on: {def_item.depends_on}")
+    print(f"  Dependents: {def_item.dependents}")
+```
+
+### Register Access Tracking
+
+```python
+# Get register variable at specific instruction
+insn_view = ddg.view[0x401000]
+
+# Access by register name (e.g., 'rax')
+rax_item = insn_view['rax']
+if rax_item:
+    print(f"RAX depends on: {rax_item.depends_on}")
+    print(f"RAX dependents: {rax_item.dependents}")
+```
+
+### Function-Specific Analysis
+
+```python
+# Get dependency graph for main function
+main_func = cfg.functions.get('main')
+if main_func:
+    func_graph = ddg.function_dependency_graph(main_func)
+    if func_graph:
+        print(f"Dependencies in main: {len(func_graph.edges())}")
+```
+
+### Working with ProgramVariable
+
+```python
+from angr.analyses.ddg import ProgramVariable
+from angr.sim_variable import SimRegisterVariable
+from angr.code_location import CodeLocation
+
+# Create a program variable
+reg_var = SimRegisterVariable(16, 8)  # offset 16, size 8 bytes
+location = CodeLocation(0x401000, 5)  # block addr, stmt idx
+prog_var = ProgramVariable(reg_var, location, arch=project.arch)
+
+# Get subgraph starting from this variable
+subgraph = ddg.data_sub_graph(prog_var, simplified=True)
+print(f"Subgraph has {len(subgraph.nodes())} nodes")
+```
+
+### Limiting Analysis Scope
+
+```python
+# Only analyze specific blocks
+block_addrs = [0x401000, 0x401020, 0x401040]
+
+ddg = project.analyses.DDG(
+    cfg=cfg,
+    block_addrs=block_addrs
+)
+```
+
+### Call Depth Control
+
+```python
+# Limit analysis to 2 levels of function calls
+ddg = project.analyses.DDG(
+    cfg=cfg,
+    call_depth=2
+)
+```
+
+## Data Structures
+
+### ProgramVariable
+
+Represents a variable at a specific program location.
+
+<ResponseField name="variable" type="SimVariable">
+  The variable (register, memory, stack, etc.).
+</ResponseField>
+
+<ResponseField name="location" type="CodeLocation">
+  The code location where this variable is defined/used.
+</ResponseField>
+
+<ResponseField name="initial" type="bool">
+  Whether this is an initial value (e.g., function argument).
+</ResponseField>
+
+### DDGViewItem
+
+Provides a high-level interface to query dependencies.
+
+<ResponseField name="depends_on" type="list[DDGViewItem]">
+  List of items this variable depends on.
+</ResponseField>
+
+<ResponseField name="dependents" type="list[DDGViewItem]">
+  List of items that depend on this variable.
+</ResponseField>
+
+## Tracked Dependencies
+
+The DDG tracks the following types of dependencies:
+
+1. **Temporary variable dependencies** (within basic blocks)
+2. **Register dependencies** (across instructions)
+3. **Stack read/write dependencies** (intra- and inter-function)
+4. **Static memory positions** (global data)
+
+### Dependency Edge Types
+
+<ParamField path="mem_addr" type="string">
+  Memory address dependency (used in address calculation).
+</ParamField>
+
+<ParamField path="mem_data" type="string">
+  Memory data dependency (value stored/loaded).
+</ParamField>
+
+<ParamField path="reg" type="string">
+  Register dependency.
+</ParamField>
+
+<ParamField path="tmp" type="string">
+  Temporary variable dependency.
+</ParamField>
+
+<ParamField path="kill" type="string">
+  Kill edge (variable overwritten).
+</ParamField>
+
+## Limitations
+
+<Warning>
+  The DDG analysis has several limitations:
+  
+  - **No aliasing analysis**: Cannot handle complex pointer aliasing
+  - **No symbolic memory tracking**: Symbolic memory accesses are not tracked accurately
+  - **Fastpath mode only**: Requires CFG generated in fastpath mode
+  - **Limited precision**: May miss dependencies or report false dependencies
+  
+  For production use cases requiring accurate dependence analysis, consider using VFG (Value-Flow Graph) instead.
+</Warning>

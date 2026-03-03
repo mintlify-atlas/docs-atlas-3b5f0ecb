@@ -1,0 +1,501 @@
+---
+title: Filesystem Plugin
+description: API reference for angr's virtual filesystem plugin
+---
+
+The filesystem plugin (`SimFilesystem`) provides a virtual filesystem for angr states. It manages files, directories, and mountpoints, allowing symbolic execution to interact with file paths and contents. It's accessible via `state.fs`.
+
+## Overview
+
+The filesystem plugin provides:
+- File and directory management
+- Path normalization and resolution
+- Mountpoint support for special filesystems
+- Integration with POSIX file operations
+- Support for concrete and symbolic file access
+
+## Core Properties
+
+<ParamField path="pathsep" type="bytes" default="b'/'">
+  Path separator character used for this filesystem.
+</ParamField>
+
+<ParamField path="cwd" type="bytes">
+  Current working directory path.
+</ParamField>
+
+<ParamField path="unlinks" type="list">
+  List of (path, SimFile) tuples for deleted files (for tracking purposes).
+</ParamField>
+
+```python
+# Get current settings
+print(f"Path separator: {state.fs.pathsep}")
+print(f"Working directory: {state.fs.cwd}")
+
+# Change working directory
+state.fs.chdir(b"/home/user")
+```
+
+## File Operations
+
+### get
+
+```python
+get(path)
+```
+
+Retrieve a file from the filesystem.
+
+<ParamField path="path" type="str | bytes">
+  Path to the file (relative or absolute).
+</ParamField>
+
+<ResponseField name="return" type="SimFile | None">
+  The file object, or None if not found.
+</ResponseField>
+
+```python
+# Get a file
+file = state.fs.get(b"/etc/passwd")
+if file:
+    content = file.concretize()
+    print(content)
+
+# Relative path (uses cwd)
+file = state.fs.get(b"config.txt")
+```
+
+### insert
+
+```python
+insert(path, simfile)
+```
+
+Insert a file into the filesystem.
+
+<ParamField path="path" type="str | bytes">
+  Path where the file should be stored.
+</ParamField>
+
+<ParamField path="simfile" type="SimFile">
+  The file object to insert.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  True if successful, False otherwise.
+</ResponseField>
+
+```python
+from angr.storage.file import SimFile
+
+# Create and insert a file
+file = SimFile(b"myfile", content=b"Hello, World!")
+if state.fs.insert(b"/tmp/myfile", file):
+    print("File inserted successfully")
+
+# Insert with symbolic content
+sym_content = state.solver.BVS('file_content', 64 * 8)
+file = SimFile(b"data", content=sym_content, size=64)
+state.fs.insert(b"/tmp/data", file)
+```
+
+### delete
+
+```python
+delete(path)
+```
+
+Delete a file from the filesystem.
+
+<ParamField path="path" type="str | bytes">
+  Path to the file to delete.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  True if successful, False if file not found.
+</ResponseField>
+
+```python
+# Delete a file
+if state.fs.delete(b"/tmp/myfile"):
+    print("File deleted")
+    
+    # Deleted files are tracked
+    for path, file in state.fs.unlinks:
+        print(f"Deleted: {path}")
+```
+
+## Directory Operations
+
+### chdir
+
+```python
+chdir(path)
+```
+
+Change the current working directory.
+
+<ParamField path="path" type="str | bytes">
+  New working directory path.
+</ParamField>
+
+```python
+# Absolute path
+state.fs.chdir(b"/home/user")
+
+# Relative path
+state.fs.chdir(b"Documents")
+print(state.fs.cwd)  # b'/home/user/Documents'
+
+# Parent directory
+state.fs.chdir(b"..")
+print(state.fs.cwd)  # b'/home/user'
+```
+
+### Path Normalization
+
+Paths are automatically normalized:
+- Converts to absolute paths
+- Resolves `.` (current dir) and `..` (parent dir)
+- Removes duplicate separators
+- Removes trailing separators
+
+```python
+# These all resolve to b'/home/user/file.txt'
+state.fs.get(b"/home/user/./file.txt")
+state.fs.get(b"/home/user/subdir/../file.txt")
+state.fs.get(b"/home//user///file.txt")
+```
+
+## Mountpoints
+
+Mountpoints allow custom filesystem behavior for specific paths.
+
+### mount
+
+```python
+mount(path, mount)
+```
+
+Mount a filesystem at a specific path.
+
+<ParamField path="path" type="str | bytes">
+  Mount point path.
+</ParamField>
+
+<ParamField path="mount" type="SimMount">
+  The mount object to attach.
+</ParamField>
+
+```python
+from angr.state_plugins.filesystem import SimHostFilesystem
+
+# Mount host filesystem
+host_fs = SimHostFilesystem(host_path='/tmp')
+state.fs.mount(b"/mnt/host", host_fs)
+
+# Access files from host
+file = state.fs.get(b"/mnt/host/data.txt")
+```
+
+### unmount
+
+```python
+unmount(path)
+```
+
+Remove a mountpoint.
+
+<ParamField path="path" type="str | bytes">
+  Path to unmount.
+</ParamField>
+
+```python
+state.fs.unmount(b"/mnt/host")
+```
+
+### get_mountpoint
+
+```python
+get_mountpoint(path)
+```
+
+Find the mountpoint servicing a path.
+
+<ParamField path="path" type="str | bytes">
+  Path to lookup.
+</ParamField>
+
+<ResponseField name="return" type="tuple">
+  (mount, path_elements) where mount is the SimMount and path_elements is the path within the mount.
+</ResponseField>
+
+```python
+mount, elements = state.fs.get_mountpoint(b"/mnt/host/subdir/file.txt")
+if mount:
+    print(f"Mount found, remaining path: {elements}")
+    # elements = [b'subdir', b'file.txt']
+```
+
+## Built-in Mounts
+
+The POSIX plugin automatically creates special mounts:
+
+### /dev (PosixDevFS)
+
+Provides access to standard streams:
+
+```python
+# These map to stdin/stdout/stderr
+stdin = state.fs.get(b"/dev/stdin")   # FD 0
+stdout = state.fs.get(b"/dev/stdout") # FD 1
+stderr = state.fs.get(b"/dev/stderr") # FD 2
+```
+
+### /proc (PosixProcFS)
+
+Provides process information:
+
+```python
+# Read system uptime
+uptime = state.fs.get(b"/proc/uptime")
+if uptime:
+    content = uptime.concretize()
+    print(content)  # b'0 0'
+```
+
+## Mount Types
+
+### SimMount
+
+Base class for creating custom mounts.
+
+```python
+from angr.state_plugins.filesystem import SimMount
+
+class MyMount(SimMount):
+    def get(self, path_elements):
+        # Return SimFile or None
+        pass
+    
+    def insert(self, path_elements, simfile):
+        # Return True if successful
+        pass
+    
+    def delete(self, path_elements):
+        # Return True if successful
+        pass
+    
+    def lookup(self, sim_file):
+        # Return path string or None
+        pass
+```
+
+### SimHostFilesystem
+
+Mount that provides access to the host filesystem.
+
+```python
+from angr.state_plugins.filesystem import SimHostFilesystem
+
+# Mount host /tmp to guest /host_tmp
+host_tmp = SimHostFilesystem(host_path='/tmp')
+state.fs.mount(b"/host_tmp", host_tmp)
+
+# Read actual files from host
+file = state.fs.get(b"/host_tmp/test.txt")
+if file:
+    print(file.concretize())
+```
+
+<ParamField path="host_path" type="str">
+  Path on the host system to expose.
+</ParamField>
+
+<ParamField path="pathsep" type="str" default="os.path.sep">
+  Host path separator.
+</ParamField>
+
+### SimConcreteFilesystem
+
+Abstract base class for filesystems that lazily load files.
+
+```python
+class MyLazyFS(SimConcreteFilesystem):
+    def _load_file(self, guest_path):
+        # Load file from somewhere
+        content = load_from_database(guest_path)
+        if content:
+            return SimFile(guest_path.encode(), content=content)
+        return None
+```
+
+## Examples
+
+### Creating a Virtual Filesystem
+
+```python
+import angr
+from angr.storage.file import SimFile
+
+project = angr.Project('/bin/true')
+state = project.factory.entry_state()
+
+# Create directory structure
+state.fs.insert(b"/etc/passwd", SimFile(
+    b"passwd",
+    content=b"root:x:0:0:root:/root:/bin/bash\n"
+))
+
+state.fs.insert(b"/etc/hosts", SimFile(
+    b"hosts",
+    content=b"127.0.0.1 localhost\n"
+))
+
+state.fs.insert(b"/tmp/data.txt", SimFile(
+    b"data",
+    content=b"Important data\n"
+))
+
+# Access files
+passwd = state.fs.get(b"/etc/passwd")
+print(passwd.concretize())
+```
+
+### Working with Symbolic Files
+
+```python
+# Create symbolic file content
+file_size = 256
+sym_content = state.solver.BVS('config_file', file_size * 8)
+
+file = SimFile(
+    b"config",
+    content=sym_content,
+    size=file_size
+)
+state.fs.insert(b"/etc/config", file)
+
+# Add constraints on file content
+file_bv = state.fs.get(b"/etc/config").content
+state.solver.add(file_bv[0:8] == ord('['))  # Must start with '['
+state.solver.add(file_bv[8:16] == ord('s'))  # Second char is 's'
+
+# Solve for valid file content
+valid_content = state.solver.eval(file_bv, cast_to=bytes)
+print(valid_content[:10])
+```
+
+### Mounting Host Filesystem
+
+```python
+from angr.state_plugins.filesystem import SimHostFilesystem
+
+# Mount host directory
+host_fs = SimHostFilesystem(host_path='/etc')
+state.fs.mount(b"/host_etc", host_fs)
+
+# Read actual host files
+passwd = state.fs.get(b"/host_etc/passwd")
+if passwd:
+    content = passwd.concretize()
+    print("Actual /etc/passwd:")
+    print(content.decode())
+```
+
+### Tracking File Operations
+
+```python
+# Create a file
+state.fs.insert(b"/tmp/test", SimFile(b"test", content=b"data"))
+
+# Delete it
+state.fs.delete(b"/tmp/test")
+
+# Check deletion history
+for path, deleted_file in state.fs.unlinks:
+    print(f"Deleted: {path}")
+    print(f"Content was: {deleted_file.concretize()}")
+```
+
+### Custom Mount Implementation
+
+```python
+from angr.state_plugins.filesystem import SimMount
+from angr.storage.file import SimFile
+
+class MemoryMount(SimMount):
+    """Mount that stores files in a dictionary"""
+    
+    def __init__(self):
+        super().__init__()
+        self.files = {}
+    
+    def get(self, path_elements):
+        key = b'/'.join(path_elements)
+        return self.files.get(key)
+    
+    def insert(self, path_elements, simfile):
+        key = b'/'.join(path_elements)
+        self.files[key] = simfile
+        return True
+    
+    def delete(self, path_elements):
+        key = b'/'.join(path_elements)
+        return self.files.pop(key, None) is not None
+    
+    def lookup(self, sim_file):
+        for key, file in self.files.items():
+            if file == sim_file:
+                return key
+        return None
+
+# Use the custom mount
+mem_fs = MemoryMount()
+state.fs.mount(b"/memory", mem_fs)
+
+state.fs.insert(b"/memory/file1", SimFile(b"f1", content=b"data1"))
+state.fs.insert(b"/memory/file2", SimFile(b"f2", content=b"data2"))
+```
+
+### Integration with POSIX open()
+
+```python
+from angr.storage.file import Flags
+
+# Files in filesystem can be opened via POSIX
+state.fs.insert(b"/tmp/secret.txt", SimFile(
+    b"secret",
+    content=b"password123"
+))
+
+# Open through POSIX interface
+fd = state.posix.open(b"/tmp/secret.txt", Flags.O_RDONLY)
+if state.solver.eval(fd) >= 0:
+    fd_obj = state.posix.get_fd(state.solver.eval(fd))
+    data = fd_obj.read(11)
+    print(state.solver.eval(data, cast_to=bytes))  # b'password123'
+```
+
+## State Options
+
+Filesystem behavior can be modified with state options:
+
+```python
+from angr import sim_options as so
+
+# All file accesses succeed (creates symbolic files on demand)
+state.options.add(so.ALL_FILES_EXIST)
+
+# File existence is symbolic (may or may not exist)
+state.options.add(so.ANY_FILE_MIGHT_EXIST)
+
+# Neither option: files must exist in filesystem to be opened
+```
+
+## See Also
+
+- [POSIX Plugin](/api/state-plugins/posix) - File descriptor and system call interface
+- [SimFile](/api/storage/simfile) - File object API
+- [State Options](/core-concepts/options) - Filesystem-related options

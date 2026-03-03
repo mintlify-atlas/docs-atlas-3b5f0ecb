@@ -1,0 +1,321 @@
+---
+title: Decompiler
+description: API reference for angr's decompiler analysis
+---
+
+The `Decompiler` analysis converts binary code into human-readable pseudocode. It processes a function through multiple stages including AIL conversion, optimization, region identification, structuring, and code generation.
+
+## Constructor
+
+```python
+Decompiler(
+    func,
+    cfg=None,
+    options=None,
+    preset=None,
+    optimization_passes=None,
+    flavor="pseudocode",
+    decompile=True,
+    generate_code=True,
+    use_cache=True,
+    update_cache=True,
+    **kwargs
+)
+```
+
+<ParamField path="func" type="Function | str | int" required>
+  The function to decompile. Can be a `Function` object, function name (string), or function address (int).
+</ParamField>
+
+<ParamField path="cfg" type="CFGFast | CFGModel | None">
+  Control flow graph to use. If `None`, the most accurate CFG from the knowledge base is used.
+</ParamField>
+
+<ParamField path="options" type="list[tuple] | None">
+  A list of tuples specifying decompilation options. Each tuple is `(option, value)` where option can be a string or `DecompilationOption` instance.
+</ParamField>
+
+<ParamField path="preset" type="str | DecompilationPreset | None">
+  Decompilation preset to use. Available presets:
+  - `"default"` - Standard optimization passes
+  - `"basic"` - Minimal optimizations for fallback
+  - Custom `DecompilationPreset` object
+</ParamField>
+
+<ParamField path="optimization_passes" type="list | None">
+  Custom list of optimization passes. If specified, overrides the preset.
+</ParamField>
+
+<ParamField path="flavor" type="str" default="pseudocode">
+  Output flavor. Currently supports `"pseudocode"` for C-like code.
+</ParamField>
+
+<ParamField path="decompile" type="bool" default="True">
+  Whether to immediately run decompilation upon construction.
+</ParamField>
+
+<ParamField path="generate_code" type="bool" default="True">
+  Whether to generate code output. Set to `False` if you only need intermediate representations.
+</ParamField>
+
+<ParamField path="use_cache" type="bool" default="True">
+  Whether to use cached decompilation results if available.
+</ParamField>
+
+<ParamField path="update_cache" type="bool" default="True">
+  Whether to update the decompilation cache with results.
+</ParamField>
+
+### Additional Parameters
+
+<ParamField path="sp_tracker_track_memory" type="bool" default="True">
+  Whether the stack pointer tracker should track memory accesses.
+</ParamField>
+
+<ParamField path="variable_kb" type="VariableKnowledgeBase | None">
+  Custom variable knowledge base to use.
+</ParamField>
+
+<ParamField path="peephole_optimizations" type="list | None">
+  List of peephole optimization classes to apply.
+</ParamField>
+
+<ParamField path="vars_must_struct" type="set[str] | None">
+  Set of variable names that must be structified.
+</ParamField>
+
+<ParamField path="inline_functions" type="set | None">
+  Set of function addresses to inline during decompilation.
+</ParamField>
+
+<ParamField path="desired_variables" type="set | None">
+  Set of desired variable names to preserve.
+</ParamField>
+
+<ParamField path="expr_collapse_depth" type="int" default="16">
+  Maximum depth for collapsing binary operation expressions.
+</ParamField>
+
+## Properties
+
+<ResponseField name="codegen" type="CStructuredCodeGenerator | None">
+  The code generator instance containing the final pseudocode output.
+</ResponseField>
+
+<ResponseField name="clinic" type="Clinic | None">
+  The Clinic analysis result containing AIL graph and optimization information.
+</ResponseField>
+
+<ResponseField name="seq_node" type="SequenceNode | None">
+  The structured representation of the function after structuring.
+</ResponseField>
+
+<ResponseField name="ail_graph" type="networkx.DiGraph | None">
+  The optimized AIL (angr Intermediate Language) graph.
+</ResponseField>
+
+<ResponseField name="unoptimized_ail_graph" type="networkx.DiGraph | None">
+  The AIL graph before optimizations, useful for exact instruction-to-AIL mapping.
+</ResponseField>
+
+<ResponseField name="region_identifier" type="RegionIdentifier | None">
+  The region identifier analysis result.
+</ResponseField>
+
+<ResponseField name="cache" type="DecompilationCache | None">
+  The decompilation cache object.
+</ResponseField>
+
+<ResponseField name="notes" type="dict[str, DecompilationNote]">
+  Dictionary of decompilation notes and warnings.
+</ResponseField>
+
+## Code Output
+
+The decompiled code is available through the `codegen` property:
+
+```python
+# Get the decompiled text
+if dec.codegen:
+    print(dec.codegen.text)
+```
+
+### CStructuredCodeGenerator Properties
+
+<ResponseField name="text" type="str">
+  The complete decompiled C-like pseudocode as a string.
+</ResponseField>
+
+<ResponseField name="expr_comments" type="dict">
+  Comments associated with expressions in the code.
+</ResponseField>
+
+<ResponseField name="stmt_comments" type="dict">
+  Comments associated with statements in the code.
+</ResponseField>
+
+<ResponseField name="const_formats" type="dict">
+  Formatting information for constants (hex, decimal, etc.).
+</ResponseField>
+
+## Example Usage
+
+### Basic Decompilation
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+
+# Generate CFG first
+cfg = project.analyses.CFGFast()
+
+# Decompile main function
+main_func = project.kb.functions['main']
+dec = project.analyses.Decompiler(main_func, cfg=cfg.model)
+
+# Print decompiled code
+if dec.codegen:
+    print(dec.codegen.text)
+```
+
+### Using Presets
+
+```python
+# Use basic preset for faster but less optimized decompilation
+dec = project.analyses.Decompiler(
+    main_func,
+    preset="basic"
+)
+
+# Or use default preset explicitly
+dec = project.analyses.Decompiler(
+    main_func,
+    preset="default"
+)
+```
+
+### Custom Options
+
+```python
+# Specify custom decompilation options
+options = [
+    ('remove_dead_memdefs', True),
+    ('max_iterations', 5)
+]
+
+dec = project.analyses.Decompiler(
+    main_func,
+    options=options
+)
+```
+
+### Working with AIL
+
+```python
+# Access the AIL graph for custom analysis
+if dec.ail_graph:
+    for node in dec.ail_graph.nodes():
+        print(f"Block at {hex(node.addr)}")
+        for stmt in node.statements:
+            print(f"  {stmt}")
+```
+
+### Accessing Intermediate Results
+
+```python
+# Get structured representation before code generation
+if dec.seq_node:
+    # Walk through the sequence node
+    from angr.analyses.decompiler.sequence_walker import SequenceWalker
+    
+    def callback(node):
+        print(type(node).__name__)
+    
+    walker = SequenceWalker(dec.seq_node, callback)
+    walker.walk()
+```
+
+### Caching
+
+```python
+# First decompilation - builds cache
+dec1 = project.analyses.Decompiler(
+    main_func,
+    use_cache=True,
+    update_cache=True
+)
+
+# Second decompilation - uses cache (much faster)
+dec2 = project.analyses.Decompiler(
+    main_func,
+    use_cache=True
+)
+
+# Force re-decompilation without cache
+dec3 = project.analyses.Decompiler(
+    main_func,
+    use_cache=False
+)
+```
+
+### Error Handling
+
+```python
+# Check for decompilation errors
+if dec.errors:
+    print("Decompilation encountered errors:")
+    for error in dec.errors:
+        print(f"  {error}")
+
+# Check notes and warnings
+for note_type, note in dec.notes.items():
+    print(f"{note_type}: {note}")
+```
+
+### Function Inlining
+
+```python
+# Inline specific functions during decompilation
+helper_func_addr = 0x401234
+
+dec = project.analyses.Decompiler(
+    main_func,
+    inline_functions={helper_func_addr}
+)
+```
+
+## Decompilation Stages
+
+The decompiler goes through several stages:
+
+1. **AIL Conversion**: Convert VEX IR to AIL (angr Intermediate Language)
+2. **Graph Simplification**: Run optimization passes on the AIL graph
+3. **Region Identification**: Identify loops, conditionals, and other control structures
+4. **Structuring**: Build a structured representation (AST-like)
+5. **Code Generation**: Generate C pseudocode from the structured representation
+
+### Controlling Stages
+
+```python
+from angr.analyses.decompiler.clinic import ClinicStage
+
+# Stop after variable recovery, skip code generation
+dec = project.analyses.Decompiler(
+    main_func,
+    clinic_end_stage=ClinicStage.RECOVER_VARIABLES,
+    generate_code=False
+)
+
+# Access intermediate results
+if dec.ail_graph:
+    # Work with AIL directly
+    pass
+```
+
+## Related Analyses
+
+- **Clinic**: Performs AIL conversion and optimization (used internally)
+- **RegionIdentifier**: Identifies regions in the control flow
+- **RecursiveStructurer**: Structures the code using schemas
+- **StructuredCodeGenerator**: Generates pseudocode from structured representation

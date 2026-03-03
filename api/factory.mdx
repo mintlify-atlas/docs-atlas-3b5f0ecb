@@ -1,0 +1,574 @@
+---
+title: Factory (AngrObjectFactory)
+description: Factory for creating states, blocks, and simulation managers
+---
+
+The `AngrObjectFactory` (accessed via `project.factory`) provides convenient access to important angr analysis elements such as states, blocks, simulation managers, and callable functions.
+
+## Class Signature
+
+```python
+class AngrObjectFactory:
+    def __init__(self, project, default_engine: type[SimEngine] | None = None)
+```
+
+## Parameters
+
+<ParamField path="project" type="Project">
+  The angr Project instance.
+</ParamField>
+
+<ParamField path="default_engine" type="type[SimEngine]">
+  The default execution engine to use (defaults to UberEngine).
+</ParamField>
+
+## Attributes
+
+<ResponseField name="project" type="Project">
+  The associated angr Project.
+</ResponseField>
+
+<ResponseField name="default_engine" type="SimEngine">
+  The default execution engine instance (thread-local).
+</ResponseField>
+
+<ResponseField name="procedure_engine" type="ProcedureEngine">
+  The engine for executing SimProcedures.
+</ResponseField>
+
+## State Creation Methods
+
+<Accordion title="blank_state()">
+  **Signature:**
+  ```python
+  def blank_state(
+      self,
+      addr=None,
+      initial_prefix=None,
+      fs=None,
+      concrete_fs=False,
+      chroot=None,
+      **kwargs
+  ) -> SimState
+  ```
+
+  Returns a mostly-uninitialized state object.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address the state should start at instead of the entry point.
+  </ParamField>
+
+  <ParamField path="initial_prefix" type="str">
+    If provided, all symbolic registers will hold symbolic values with names prefixed by this string.
+  </ParamField>
+
+  <ParamField path="fs" type="dict">
+    A dictionary of file names with associated preset SimFile objects.
+  </ParamField>
+
+  <ParamField path="concrete_fs" type="bool" default="False">
+    Whether the host filesystem should be consulted when opening files.
+  </ParamField>
+
+  <ParamField path="chroot" type="str">
+    A path to use as a fake root directory (only when concrete_fs is True).
+  </ParamField>
+
+  **Returns:** `SimState` - The blank state.
+
+  **Example:**
+  ```python
+  state = proj.factory.blank_state(addr=0x400000)
+  ```
+</Accordion>
+
+<Accordion title="entry_state()">
+  **Signature:**
+  ```python
+  def entry_state(
+      self,
+      addr=None,
+      initial_prefix=None,
+      fs=None,
+      concrete_fs=False,
+      chroot=None,
+      argc=None,
+      args=None,
+      env=None,
+      **kwargs
+  ) -> SimState
+  ```
+
+  Returns a state object representing the program at its entry point.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    Start address instead of the entry point.
+  </ParamField>
+
+  <ParamField path="argc" type="int | claripy.ast.BV">
+    Custom value for the program's argc.
+  </ParamField>
+
+  <ParamField path="args" type="list[str | bytes | claripy.ast.BV]">
+    List of values to use as the program's argv.
+  </ParamField>
+
+  <ParamField path="env" type="dict[str | bytes, str | bytes]">
+    Dictionary to use as the environment.
+  </ParamField>
+
+  **Returns:** `SimState` - The entry state.
+
+  **Example:**
+  ```python
+  state = proj.factory.entry_state(
+      args=['./program', 'arg1', 'arg2'],
+      env={'PATH': '/usr/bin'}
+  )
+  ```
+</Accordion>
+
+<Accordion title="full_init_state()">
+  **Signature:**
+  ```python
+  def full_init_state(self, **kwargs) -> SimState
+  ```
+
+  Like `entry_state()`, but starts at a SimProcedure that plays the role of the dynamic loader, calling initializer functions before reaching the entry point.
+
+  Takes the same arguments as `entry_state()`, except for `addr`.
+
+  **Returns:** `SimState` - The fully initialized state.
+
+  **Example:**
+  ```python
+  state = proj.factory.full_init_state()
+  ```
+</Accordion>
+
+<Accordion title="call_state()">
+  **Signature:**
+  ```python
+  def call_state(
+      self,
+      addr,
+      *args,
+      base_state=None,
+      cc=None,
+      ret_addr=None,
+      stack_base=None,
+      alloc_base=None,
+      grow_like_stack=True,
+      toc=None,
+      **kwargs
+  ) -> SimState
+  ```
+
+  Returns a state initialized to the start of a given function, as if it were called with given parameters.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address of the function to call.
+  </ParamField>
+
+  <ParamField path="args" type="Any">
+    Positional arguments to pass to the function. Can be python types, which will be converted to binary format.
+  </ParamField>
+
+  <ParamField path="base_state" type="SimState">
+    Use this SimState as the base instead of a blank state.
+  </ParamField>
+
+  <ParamField path="cc" type="SimCC">
+    A SimCC object specifying the calling convention.
+  </ParamField>
+
+  <ParamField path="ret_addr" type="int">
+    The function's return target address.
+  </ParamField>
+
+  <ParamField path="stack_base" type="int">
+    Pointer to use as the top of the stack.
+  </ParamField>
+
+  <ParamField path="alloc_base" type="int">
+    Pointer for placing excess argument data.
+  </ParamField>
+
+  <ParamField path="grow_like_stack" type="bool" default="True">
+    Whether allocations at alloc_base grow downward.
+  </ParamField>
+
+  <ParamField path="toc" type="int">
+    The address of the table of contents for ppc64.
+  </ParamField>
+
+  **Returns:** `SimState` - The state at the beginning of the function.
+
+  **Example:**
+  ```python
+  # Call function with arguments
+  state = proj.factory.call_state(
+      0x400500,
+      10,  # First argument
+      "hello",  # Second argument (will be a pointer to string)
+      ret_addr=0x400600
+  )
+  ```
+</Accordion>
+
+## Simulation Manager Methods
+
+<Accordion title="simulation_manager() / simgr()">
+  **Signature:**
+  ```python
+  def simulation_manager(
+      self,
+      thing: list[SimState] | SimState | None = None,
+      **kwargs
+  ) -> SimulationManager
+  ```
+
+  Constructs a new simulation manager.
+
+  **Parameters:**
+  <ParamField path="thing" type="SimState | list[SimState] | None">
+    What to put in the new SimulationManager's active stash. If None, uses entry_state().
+  </ParamField>
+
+  **Returns:** `SimulationManager` - The new simulation manager.
+
+  **Example:**
+  ```python
+  # From entry state
+  simgr = proj.factory.simgr()
+  
+  # From custom state
+  state = proj.factory.blank_state(addr=0x400000)
+  simgr = proj.factory.simgr(state)
+  
+  # From multiple states
+  states = [state1, state2, state3]
+  simgr = proj.factory.simgr(states)
+  ```
+
+  **Note:** `simgr()` is an alias for `simulation_manager()`.
+</Accordion>
+
+## Block Methods
+
+<Accordion title="block()">
+  **Signature:**
+  ```python
+  def block(
+      self,
+      addr,
+      size=None,
+      max_size=None,
+      byte_string=None,
+      thumb=False,
+      backup_state=None,
+      extra_stop_points=None,
+      opt_level=None,
+      num_inst=None,
+      traceflags=0,
+      insn_bytes=None,
+      strict_block_end=None,
+      collect_data_refs=False,
+      cross_insn_opt=True,
+      load_from_ro_regions=False,
+      const_prop=False,
+      initial_regs=None,
+      skip_stmts=False,
+  ) -> Block
+  ```
+
+  Create a Block object representing a basic block of code.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address of the block.
+  </ParamField>
+
+  <ParamField path="size" type="int">
+    The size of the block in bytes.
+  </ParamField>
+
+  <ParamField path="byte_string" type="bytes">
+    Custom bytes to use instead of reading from memory.
+  </ParamField>
+
+  <ParamField path="thumb" type="bool" default="False">
+    Whether this is ARM Thumb mode.
+  </ParamField>
+
+  <ParamField path="num_inst" type="int">
+    Maximum number of instructions to lift.
+  </ParamField>
+
+  <ParamField path="opt_level" type="int">
+    VEX optimization level (0-2).
+  </ParamField>
+
+  **Returns:** `Block` - The block object.
+
+  **Example:**
+  ```python
+  block = proj.factory.block(0x400000)
+  print(f"Block has {block.instructions} instructions")
+  block.pp()  # Pretty-print disassembly
+  ```
+</Accordion>
+
+<Accordion title="fresh_block()">
+  **Signature:**
+  ```python
+  def fresh_block(self, addr, size, backup_state=None) -> Block
+  ```
+
+  Create a fresh Block with a specific size.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address of the block.
+  </ParamField>
+
+  <ParamField path="size" type="int">
+    The size of the block.
+  </ParamField>
+
+  <ParamField path="backup_state" type="SimState">
+    State to read bytes from.
+  </ParamField>
+
+  **Returns:** `Block`
+</Accordion>
+
+## Callable Methods
+
+<Accordion title="callable()">
+  **Signature:**
+  ```python
+  def callable(
+      self,
+      addr: int | Function,
+      prototype=None,
+      concrete_only=False,
+      perform_merge=True,
+      base_state=None,
+      toc=None,
+      cc=None,
+      add_options=None,
+      remove_options=None,
+      techniques: list[ExplorationTechnique] | None = None,
+      step_limit: int | None = None,
+  ) -> Callable
+  ```
+
+  Create a Callable object that represents a function in the binary that can be called like a native Python function.
+
+  **Parameters:**
+  <ParamField path="addr" type="int | Function">
+    The address of the function (or a Function object).
+  </ParamField>
+
+  <ParamField path="prototype" type="str | SimTypeFunction">
+    The prototype of the call as a string or SimTypeFunction.
+  </ParamField>
+
+  <ParamField path="concrete_only" type="bool" default="False">
+    Throw an exception if execution splits into multiple states.
+  </ParamField>
+
+  <ParamField path="perform_merge" type="bool" default="True">
+    Merge all result states into one at the end.
+  </ParamField>
+
+  <ParamField path="base_state" type="SimState">
+    The state from which to do runs.
+  </ParamField>
+
+  <ParamField path="cc" type="SimCC">
+    The calling convention to use.
+  </ParamField>
+
+  <ParamField path="step_limit" type="int">
+    Maximum number of blocks to execute before pruning.
+  </ParamField>
+
+  **Returns:** `Callable` - A callable object.
+
+  **Example:**
+  ```python
+  # Get a function
+  func = proj.kb.functions['main']
+  
+  # Make it callable
+  main_callable = proj.factory.callable(func.addr)
+  
+  # Call it like a Python function
+  result = main_callable(arg1=10, arg2=20)
+  print(f"Function returned: {result}")
+  ```
+</Accordion>
+
+## Calling Convention Methods
+
+<Accordion title="cc()">
+  **Signature:**
+  ```python
+  def cc(self) -> SimCC
+  ```
+
+  Return a SimCC (calling convention) object parameterized for this project.
+
+  **Returns:** `SimCC` - The calling convention object.
+
+  **Example:**
+  ```python
+  cc = proj.factory.cc()
+  
+  # Access argument locations
+  arg0 = cc.ARG_REGS[0]  # First argument register
+  
+  # Create custom arguments
+  from angr.calling_conventions import SimRegArg, SimStackArg
+  
+  reg_arg = SimRegArg('rdi', 8)
+  stack_arg = SimStackArg(0, 8)  # 8 bytes at offset 0 from SP
+  ```
+</Accordion>
+
+<Accordion title="function_prototype()">
+  **Signature:**
+  ```python
+  def function_prototype(self) -> SimTypeFunction
+  ```
+
+  Return a default function prototype parameterized for this project.
+
+  **Returns:** `SimTypeFunction` - A default function prototype.
+</Accordion>
+
+## Other Methods
+
+<Accordion title="successors()">
+  **Signature:**
+  ```python
+  def successors(
+      self,
+      state,
+      engine=None,
+      addr=None,
+      jumpkind=None,
+      inline=False,
+      **kwargs
+  ) -> SimSuccessors
+  ```
+
+  Perform execution using an engine and return a SimSuccessors object.
+
+  **Parameters:**
+  <ParamField path="state" type="SimState">
+    The state to analyze.
+  </ParamField>
+
+  <ParamField path="engine" type="SimEngine">
+    The engine to use (defaults to default_engine).
+  </ParamField>
+
+  <ParamField path="addr" type="int">
+    An address to execute at instead of the state's IP.
+  </ParamField>
+
+  <ParamField path="jumpkind" type="str">
+    The jumpkind of the previous exit.
+  </ParamField>
+
+  <ParamField path="inline" type="bool" default="False">
+    Don't copy the state (inline execution).
+  </ParamField>
+
+  **Returns:** `SimSuccessors` - Object containing successor states.
+</Accordion>
+
+<Accordion title="snippet()">
+  **Signature:**
+  ```python
+  def snippet(self, addr, jumpkind=None, **block_opts) -> CodeNode
+  ```
+
+  Create a CodeNode (HookNode, SyscallNode, or BlockNode) for the given address.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address of the snippet.
+  </ParamField>
+
+  **Returns:** `CodeNode` - The code node.
+</Accordion>
+
+## Helper Classes
+
+The factory provides access to helper classes:
+
+### SimRegArg and SimStackArg
+
+```python
+# Access via factory.cc
+factory.cc.SimRegArg
+factory.cc.SimStackArg
+```
+
+### PointerWrapper
+
+```python
+# Access via factory.callable or factory.call_state
+factory.callable.PointerWrapper
+factory.call_state.PointerWrapper
+
+# Usage in call_state
+state = proj.factory.call_state(
+    addr=0x400000,
+    factory.call_state.PointerWrapper("hello")  # Pass pointer to string
+)
+```
+
+## Example Usage
+
+```python
+import angr
+
+proj = angr.Project('/bin/ls')
+factory = proj.factory  # Usually accessed as proj.factory
+
+# Create different types of states
+blank = factory.blank_state()
+entry = factory.entry_state(args=['./ls', '-la'])
+full = factory.full_init_state()
+call = factory.call_state(0x400500, 10, 20)
+
+# Create simulation manager
+simgr = factory.simgr(entry)
+simgr.run()
+
+# Create and analyze blocks
+block = factory.block(proj.entry)
+print(f"Entry block has {block.instructions} instructions")
+
+# Create callable function
+func_addr = proj.kb.functions['main'].addr
+main = factory.callable(func_addr, prototype='int main(int argc, char **argv)')
+result = main(2, ['./program', 'arg'])
+
+# Access calling convention
+cc = factory.cc()
+print(f"First arg register: {cc.ARG_REGS[0]}")
+
+# Execute a state
+successors = factory.successors(entry)
+for s in successors.successors:
+    print(f"Successor at {s.addr:#x}")
+```

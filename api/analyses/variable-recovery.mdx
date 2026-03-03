@@ -1,0 +1,387 @@
+---
+title: VariableRecovery
+description: API reference for angr's variable recovery analysis
+---
+
+The `VariableRecovery` analysis identifies and recovers variables in binary code using forced execution and data-flow analysis. It recognizes register variables, stack variables, and creates an SSA (Static Single Assignment) form representation.
+
+<Note>
+  While `VariableRecovery` provides accurate results through concrete execution, it is slower than `VariableRecoveryFast`. For faster variable recovery with reduced accuracy, consider using `VariableRecoveryFast`.
+</Note>
+
+## Constructor
+
+```python
+VariableRecovery(
+    func,
+    max_iterations=20,
+    store_live_variables=False
+)
+```
+
+<ParamField path="func" type="Function" required>
+  The `Function` object to analyze.
+</ParamField>
+
+<ParamField path="max_iterations" type="int" default="20">
+  Maximum number of iterations for the fixed-point analysis. Each basic block can be executed up to this many times.
+</ParamField>
+
+<ParamField path="store_live_variables" type="bool" default="False">
+  Whether to store live variable information at each program point. This can be useful for further analysis but increases memory usage.
+</ParamField>
+
+## Properties
+
+<ResponseField name="variable_manager" type="VariableManager">
+  The variable manager containing all identified variables for the function.
+</ResponseField>
+
+<ResponseField name="function" type="Function">
+  The function being analyzed.
+</ResponseField>
+
+<ResponseField name="project" type="Project">
+  The angr project instance.
+</ResponseField>
+
+## Variable Manager
+
+The `variable_manager` provides access to all recovered variables:
+
+```python
+var_manager = vr.variable_manager[func.addr]
+
+# Access all variables by type
+register_vars = var_manager.get_variables(sort='register')
+stack_vars = var_manager.get_variables(sort='stack')
+```
+
+### VariableManager Methods
+
+#### get_variables(sort=None)
+
+Get all variables of a specific type.
+
+<ParamField path="sort" type="str | None">
+  Variable type to filter by:
+  - `"register"` - Register variables
+  - `"stack"` - Stack variables  
+  - `"argument"` - Function arguments
+  - `None` - All variables
+</ParamField>
+
+**Returns:** List of `SimVariable` objects.
+
+#### find_variables_by_stmt(block_addr, stmt_idx, sort=None)
+
+Find variables defined at a specific statement.
+
+<ParamField path="block_addr" type="int" required>
+  Address of the basic block.
+</ParamField>
+
+<ParamField path="stmt_idx" type="int" required>
+  Statement index within the block.
+</ParamField>
+
+<ParamField path="sort" type="str | None">
+  Variable type filter.
+</ParamField>
+
+**Returns:** List of variables defined at that location.
+
+## Example Usage
+
+### Basic Variable Recovery
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+cfg = project.analyses.CFGFast()
+
+# Get function to analyze
+main_func = project.kb.functions['main']
+
+# Run variable recovery
+vr = project.analyses.VariableRecovery(main_func)
+
+# Access variable manager
+var_manager = vr.variable_manager[main_func.addr]
+
+print("Recovered Variables:")
+for var in var_manager.get_variables():
+    print(f"  {var}")
+```
+
+### Register Variables
+
+```python
+# Get all register variables
+register_vars = var_manager.get_variables(sort='register')
+
+print("Register Variables:")
+for var in register_vars:
+    print(f"  Offset: {var.reg}, Size: {var.size}")
+    print(f"  Name: {var_manager.get_variable_name(var)}")
+```
+
+### Stack Variables
+
+```python
+# Get all stack variables
+stack_vars = var_manager.get_variables(sort='stack')
+
+print("Stack Variables:")
+for var in stack_vars:
+    if isinstance(var, angr.sim_variable.SimStackVariable):
+        print(f"  Offset: {var.offset}, Size: {var.size}")
+        print(f"  Base: {var.base}")
+        print(f"  Name: {var_manager.get_variable_name(var)}")
+```
+
+### Function Arguments
+
+```python
+# Get function arguments (positive stack offsets)
+arguments = var_manager.get_variables(sort='argument')
+
+print("Function Arguments:")
+for i, arg in enumerate(arguments):
+    print(f"  arg{i}: {arg}")
+```
+
+### Variable Uses and Definitions
+
+```python
+from angr.code_location import CodeLocation
+
+# Find variables defined at a specific location
+block_addr = 0x401000
+stmt_idx = 5
+
+vars_at_stmt = var_manager.find_variables_by_stmt(
+    block_addr,
+    stmt_idx,
+    sort='register'
+)
+
+for var in vars_at_stmt:
+    print(f"Variable {var} defined at {hex(block_addr)}:{stmt_idx}")
+    
+    # Get all uses of this variable
+    uses = var_manager.get_variable_uses(var)
+    print(f"  Used at: {uses}")
+    
+    # Get all definitions
+    defs = var_manager.get_variable_definitions(var)
+    print(f"  Defined at: {defs}")
+```
+
+### Live Variables
+
+```python
+# Store live variables during analysis
+vr = project.analyses.VariableRecovery(
+    main_func,
+    store_live_variables=True
+)
+
+var_manager = vr.variable_manager[main_func.addr]
+
+# Get live variables at a specific address
+block_addr = 0x401234
+live_vars = var_manager.get_live_variables(block_addr)
+
+if live_vars:
+    register_region, stack_region = live_vars
+    print(f"Live registers at {hex(block_addr)}: {register_region}")
+    print(f"Live stack at {hex(block_addr)}: {stack_region}")
+```
+
+### Variable Names
+
+```python
+# Variable manager automatically assigns names
+for var in var_manager.get_variables():
+    name = var_manager.get_variable_name(var)
+    print(f"{name}: {var}")
+
+# Names follow conventions:
+# - Register variables: r_<offset>_<id>
+# - Stack variables: s_<offset>_<id>  
+# - Arguments: arg_<offset>_<id>
+```
+
+### Controlling Iterations
+
+```python
+# Limit iterations for faster analysis (may miss variables)
+vr = project.analyses.VariableRecovery(
+    main_func,
+    max_iterations=5
+)
+
+# More iterations for complex functions (slower but more complete)
+vr = project.analyses.VariableRecovery(
+    main_func,
+    max_iterations=50
+)
+```
+
+## Variable Types
+
+### SimRegisterVariable
+
+Represents a register variable.
+
+<ResponseField name="reg" type="int">
+  Register offset in the architecture register file.
+</ResponseField>
+
+<ResponseField name="size" type="int">
+  Size of the variable in bytes.
+</ResponseField>
+
+<ResponseField name="ident" type="int">
+  Unique identifier for SSA form.
+</ResponseField>
+
+<ResponseField name="region" type="int">
+  Function address this variable belongs to.
+</ResponseField>
+
+### SimStackVariable
+
+Represents a stack variable.
+
+<ResponseField name="offset" type="int">
+  Stack offset (relative to base pointer or stack pointer).
+</ResponseField>
+
+<ResponseField name="size" type="int">
+  Size of the variable in bytes.
+</ResponseField>
+
+<ResponseField name="base" type="str">
+  Base register: `"bp"` (base pointer) or `"sp"` (stack pointer).
+</ResponseField>
+
+<ResponseField name="ident" type="int">
+  Unique identifier for SSA form.
+</ResponseField>
+
+<ResponseField name="region" type="int">
+  Function address this variable belongs to.
+</ResponseField>
+
+## SSA Form
+
+VariableRecovery maintains variables in SSA form - each write creates a new variable:
+
+```python
+# Example: same stack location, different SSA variables
+stack_vars = var_manager.get_variables(sort='stack')
+
+# Group by offset to see SSA versions
+from collections import defaultdict
+by_offset = defaultdict(list)
+
+for var in stack_vars:
+    if isinstance(var, angr.sim_variable.SimStackVariable):
+        by_offset[var.offset].append(var)
+
+for offset, vars_list in by_offset.items():
+    if len(vars_list) > 1:
+        print(f"Stack offset {offset} has {len(vars_list)} SSA versions:")
+        for var in sorted(vars_list, key=lambda v: v.ident):
+            print(f"  {var.ident}: {var}")
+```
+
+## Advanced Usage
+
+### Custom Analysis Callback
+
+```python
+# Access intermediate states during analysis
+class VariableTracker:
+    def __init__(self):
+        self.vars_per_block = {}
+    
+    def track(self, vr):
+        var_manager = vr.variable_manager[vr.function.addr]
+        for block_addr in vr._outstates:
+            self.vars_per_block[block_addr] = var_manager.get_variables()
+
+tracker = VariableTracker()
+vr = project.analyses.VariableRecovery(main_func)
+tracker.track(vr)
+
+for block_addr, vars in tracker.vars_per_block.items():
+    print(f"Block {hex(block_addr)}: {len(vars)} variables")
+```
+
+### Integration with Other Analyses
+
+```python
+# Use with reaching definitions
+from angr.knowledge_plugins.key_definitions.constants import OP_AFTER
+
+vr = project.analyses.VariableRecovery(main_func)
+var_manager = vr.variable_manager[main_func.addr]
+
+# Run reaching definitions
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    observation_points=[('node', main_func.addr, OP_AFTER)]
+)
+
+# Correlate variables with definitions
+for var in var_manager.get_variables():
+    defs = var_manager.get_variable_definitions(var)
+    for def_loc in defs:
+        print(f"{var} defined at {def_loc}")
+```
+
+## Performance Considerations
+
+### Memory Usage
+
+```python
+# Minimize memory for large functions
+vr = project.analyses.VariableRecovery(
+    large_func,
+    store_live_variables=False,  # Don't store live vars
+    max_iterations=10  # Limit iterations
+)
+```
+
+### Analysis Speed
+
+<Warning>
+  VariableRecovery uses concrete execution which can be slow. For faster analysis:
+  
+  - Reduce `max_iterations`
+  - Use `VariableRecoveryFast` instead (less accurate)
+  - Disable `store_live_variables`
+</Warning>
+
+## Comparison: VariableRecovery vs VariableRecoveryFast
+
+| Feature | VariableRecovery | VariableRecoveryFast |
+|---------|------------------|----------------------|
+| **Speed** | Slow | Fast |
+| **Accuracy** | High | Moderate |
+| **Method** | Concrete execution | Static analysis |
+| **SSA Form** | Yes | Yes |
+| **Memory Usage** | Higher | Lower |
+| **Use Case** | Precise variable tracking | Quick variable identification |
+
+```python
+# Fast but less precise
+vrf = project.analyses.VariableRecoveryFast(main_func)
+
+# Slow but more precise  
+vr = project.analyses.VariableRecovery(main_func)
+```

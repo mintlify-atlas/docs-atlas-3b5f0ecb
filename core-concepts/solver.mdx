@@ -1,0 +1,478 @@
+---
+title: Constraint Solving with Claripy
+description: Working with symbolic expressions and solving constraints using angr's solver
+---
+
+angr uses **Claripy** for symbolic expression manipulation and constraint solving. Claripy provides an interface to SMT solvers (primarily z3) and manages symbolic variables, expressions, and constraints.
+
+## Bitvectors
+
+Bitvectors are fixed-width sequences of bits representing integers with bounded arithmetic semantics.
+
+### Creating Bitvectors
+
+```python
+import claripy
+
+# Concrete bitvectors (BVV = BitVector Value)
+one = claripy.BVV(1, 64)        # 64-bit value of 1
+one_hundred = claripy.BVV(100, 64)
+weird = claripy.BVV(9, 27)      # 27-bit value of 9
+
+# Symbolic bitvectors (BVS = BitVector Symbol)  
+x = claripy.BVS('x', 64)        # 64-bit symbolic variable named 'x'
+y = claripy.BVS('y', 64)
+flag = claripy.BVS('flag', 8*32)  # 32 bytes for a flag
+```
+
+<ParamField path="value" type="int">
+  The concrete value (for BVV)
+</ParamField>
+
+<ParamField path="name" type="str">
+  The variable name (for BVS)
+</ParamField>
+
+<ParamField path="size" type="int">
+  Width in bits
+</ParamField>
+
+### Bitvector Operations
+
+Bitvectors support standard arithmetic operations:
+
+```python
+import claripy
+
+one = claripy.BVV(1, 64)
+one_hundred = claripy.BVV(100, 64)
+x = claripy.BVS('x', 64)
+
+# Arithmetic
+one + one_hundred     # <BV64 0x65>
+one_hundred - 200     # <BV64 0xffffffffffffff9c> (wraps around)
+x + 5                 # <BV64 x_0_64 + 0x5>
+x * 2                 # <BV64 x_0_64 * 0x2>
+x / 4                 # <BV64 x_0_64 / 0x4> (unsigned division)
+
+# Bitwise operations
+x & 0xff              # <BV64 x_0_64 & 0xff>
+x | 0x1000            # <BV64 x_0_64 | 0x1000>
+x ^ y                 # <BV64 x_0_64 ^ y_1_64>
+~x                    # <BV64 ~x_0_64>
+
+# Shifts
+x << 2                # <BV64 x_0_64 << 0x2>
+x >> 4                # <BV64 x_0_64 >> 0x4> (logical shift)
+x.SAR(4)              # Arithmetic shift right
+```
+
+<Note>
+All arithmetic follows bounded integer semantics - operations wrap on overflow.
+</Note>
+
+### Extending Bitvectors
+
+To perform operations on bitvectors of different widths, extend them:
+
+```python
+weird = claripy.BVV(9, 27)
+
+# Zero-extend (pad with zeros on the left)
+weird_64 = weird.zero_extend(64 - 27)
+# <BV64 0x9>
+
+# Sign-extend (pad with copies of the sign bit)
+signed = claripy.BVV(-5, 8)
+signed_32 = signed.sign_extend(32 - 8)  
+# Preserves negative value in two's complement
+
+# Extract specific bits
+x = claripy.BVS('x', 64)
+low_byte = x[7:0]      # Extract bits 0-7 (lowest byte)
+high_byte = x[63:56]   # Extract bits 56-63 (highest byte)
+```
+
+## Symbolic Expressions (ASTs)
+
+Operations on symbolic values create Abstract Syntax Trees (ASTs):
+
+```python
+import claripy
+
+x = claripy.BVS('x', 64)
+y = claripy.BVS('y', 64)
+
+# Create a complex expression
+expr = (x + 1) / (y + 2)
+# <BV64 (x_0_64 + 0x1) / (y_1_64 + 0x2)>
+
+# Examine the AST structure
+expr.op                # '__floordiv__'
+expr.args              # (<BV64 x_0_64 + 0x1>, <BV64 y_1_64 + 0x2>)
+expr.args[0].op        # '__add__'
+expr.args[0].args      # (<BV64 x_0_64>, <BV64 0x1>)
+```
+
+Each AST node has:
+- `.op` - operation name (string)
+- `.args` - operands (other ASTs or leaf values)
+
+## Boolean Expressions
+
+Comparisons produce symbolic booleans:
+
+```python
+import claripy
+
+x = claripy.BVS('x', 64)
+y = claripy.BVS('y', 64)
+
+# Comparisons (unsigned by default)
+x == 1                 # <Bool x_0_64 == 0x1>
+x != y                 # <Bool x_0_64 != y_1_64>
+x > 10                 # <Bool x_0_64 > 0xa>
+x < 100                # <Bool x_0_64 < 0x64>
+
+# Signed comparisons
+x.SGT(10)              # Signed greater than
+x.SLT(100)             # Signed less than
+x.SGE(10)              # Signed greater or equal
+x.SLE(100)             # Signed less or equal
+
+# Boolean operations
+cond1 = x > 10
+cond2 = x < 100
+claripy.And(cond1, cond2)  # <Bool And(x_0_64 > 0xa, x_0_64 < 0x64)>
+claripy.Or(cond1, cond2)   # <Bool Or(...)>
+claripy.Not(cond1)         # <Bool Not(x_0_64 > 0xa)>
+```
+
+<Warning>
+Never use symbolic booleans directly in Python if/while statements! They don't have concrete truth values. Use `solver.is_true()` or `solver.is_false()` instead.
+</Warning>
+
+## The Solver
+
+Every SimState has a solver for managing constraints and finding solutions:
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('/bin/true')
+state = proj.factory.entry_state()
+
+x = claripy.BVS('x', 64)
+y = claripy.BVS('y', 64)
+```
+
+### Adding Constraints
+
+```python
+# Add constraints to the state
+state.solver.add(x > y)
+state.solver.add(y > 2)
+state.solver.add(10 > x)
+
+# Or add multiple at once
+state.solver.add(x > y, y > 2, 10 > x)
+```
+
+### Evaluating Expressions
+
+Get concrete values satisfying the constraints:
+
+```python
+# Get one solution
+state.solver.eval(x)
+# 4 (or any value where x > y > 2 and x < 10)
+
+# Solutions are consistent within a solver state
+x_val = state.solver.eval(x)
+y_val = state.solver.eval(y)
+# x_val > y_val > 2 is guaranteed
+
+# Evaluate complex expressions
+state.solver.eval(x + y)
+# 6 (if x=4, y=2)
+```
+
+### Multiple Solutions
+
+```python
+# Get up to N solutions
+state.solver.eval_upto(x, 5)
+# [4, 5, 6, 7, 8] (up to 5 solutions)
+
+# Get exactly N solutions (error if fewer exist)
+state.solver.eval_exact(x, 3)
+# [4, 5, 6] (exactly 3 solutions)
+
+# Get at least N solutions (error if fewer exist)
+state.solver.eval_atleast(x, 2)
+# [4, 5, ...] (at least 2 solutions)
+
+# Get unique solution (error if multiple exist)
+state.solver.eval_one(x)
+# Error! Multiple solutions exist
+```
+
+### Min/Max Values
+
+```python
+# Get minimum/maximum values
+state.solver.min(x)    # 3 (smallest value > 2 and < 10)
+state.solver.max(x)    # 9 (largest value < 10)
+
+# Useful for finding bounds
+state.solver.add(x > 100, x < 200)
+min_x = state.solver.min(x)  # 101
+max_x = state.solver.max(x)  # 199
+```
+
+### Satisfiability
+
+Check if constraints can be satisfied:
+
+```python
+# Check if current constraints are satisfiable
+state.solver.satisfiable()
+# True
+
+# Add conflicting constraint
+state.solver.add(x < 2)
+state.solver.satisfiable()
+# False (x > y > 2 but x < 2 is impossible)
+```
+
+### Casting Results
+
+Convert results to different types:
+
+```python
+# Cast to Python int (default)
+state.solver.eval(x)
+# 42
+
+# Cast to bytes
+data = claripy.BVS('data', 32)
+state.solver.add(data == 0x41424344)
+state.solver.eval(data, cast_to=bytes)
+# b'ABCD'
+
+# Cast to string (alias for bytes)
+state.solver.eval(data, cast_to=str)
+```
+
+### Extra Constraints
+
+Test constraints without adding them permanently:
+
+```python
+# Temporarily add constraints for one query
+state.solver.eval(x, extra_constraints=[x > 50])
+# Returns value > 50, but doesn't add constraint to state
+
+# State's constraints unchanged
+state.solver.eval(x)
+# May return value < 50
+```
+
+## Checking Truth Values
+
+Safely check if symbolic booleans are definitely true/false:
+
+```python
+import claripy
+
+yes = claripy.BVV(1, 64) == 1
+no = claripy.BVV(1, 64) == 2  
+maybe = x == y
+
+# Check for concrete truth/falseness
+state.solver.is_true(yes)     # True
+state.solver.is_false(yes)    # False
+
+state.solver.is_true(no)      # False
+state.solver.is_false(no)     # True
+
+state.solver.is_true(maybe)   # False (not definitely true)
+state.solver.is_false(maybe)  # False (not definitely false)
+```
+
+<Note>
+Use `is_true()` and `is_false()` instead of using symbolic booleans in Python conditionals.
+</Note>
+
+## Floating Point
+
+Claripy supports IEEE754 floating-point numbers:
+
+```python
+import claripy
+
+# Create floating-point values
+a = claripy.FPV(3.2, claripy.fp.FSORT_DOUBLE)
+# <FP64 FPV(3.2, DOUBLE)>
+
+b = claripy.FPS('b', claripy.fp.FSORT_DOUBLE)  
+# <FP64 FPS('FP_b_0_64', DOUBLE)>
+
+# Arithmetic (with rounding mode)
+a + b
+# <FP64 fpAdd('RNE', FPV(3.2, DOUBLE), FPS('FP_b_0_64', DOUBLE))>
+
+a + 4.4
+# <FP64 FPV(7.6, DOUBLE)>
+
+# Comparisons
+b + 2 < 0
+# <Bool fpLT(fpAdd('RNE', FPS('FP_b_0_64', DOUBLE), FPV(2.0, DOUBLE)), FPV(0.0, DOUBLE))>
+```
+
+### Conversion Between FP and BV
+
+```python
+# Raw bit conversion (preserve bit pattern)
+a.raw_to_bv()
+# <BV64 0x400999999999999a>
+
+claripy.BVV(0, 64).raw_to_fp()
+# <FP64 FPV(0.0, DOUBLE)>
+
+# Value conversion (like casting)
+a.val_to_bv(32)  # Convert to 32-bit int
+# <BV32 0x3>
+
+claripy.BVV(3, 32).val_to_fp(claripy.fp.FSORT_DOUBLE)
+# <FP64 FPV(3.0, DOUBLE)>
+```
+
+## Example: Solving an Equation
+
+Find input that produces a specific output:
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('/bin/true')
+state = proj.factory.entry_state()
+
+# Create symbolic input
+input_val = claripy.BVS('input', 64)
+
+# Symbolic computation
+operation = (((input_val + 4) * 3) >> 1) + input_val
+
+# We want output to equal 200
+output = 200
+state.solver.add(operation == output)
+
+# Solve for input
+solution = state.solver.eval(input_val)
+print(f"Input: {solution:#x}")
+# Input: 0x3333333333333381
+
+# Verify
+result = (((solution + 4) * 3) >> 1) + solution
+print(f"Output: {result}")
+# Output: 200
+```
+
+## Example: CTF Flag Finding
+
+```python
+import angr
+import claripy
+
+proj = angr.Project('./crackme')
+
+# Create symbolic flag
+flag = claripy.BVS('flag', 8 * 32)  # 32 bytes
+
+state = proj.factory.entry_state(stdin=flag)
+
+# Constrain to printable ASCII
+for i in range(32):
+    byte = flag.get_byte(i)
+    state.solver.add(byte >= 0x20)  # Space
+    state.solver.add(byte <= 0x7e)  # ~
+
+# Add known prefix
+state.solver.add(flag.get_byte(0) == ord('f'))
+state.solver.add(flag.get_byte(1) == ord('l'))
+state.solver.add(flag.get_byte(2) == ord('a'))
+state.solver.add(flag.get_byte(3) == ord('g'))
+state.solver.add(flag.get_byte(4) == ord('{'))
+
+# Explore to find success
+simgr = proj.factory.simulation_manager(state)
+simgr.explore(find=lambda s: b'Correct!' in s.posix.dumps(1))
+
+if simgr.found:
+    solution = simgr.found[0]
+    flag_value = solution.solver.eval(flag, cast_to=bytes)
+    print(f"Flag: {flag_value}")
+```
+
+## Example: Finding Buffer Overflow Input
+
+```python
+import angr  
+import claripy
+
+proj = angr.Project('./vulnerable')
+
+# Create large symbolic input
+buffer = claripy.BVS('buffer', 8 * 1024)
+
+state = proj.factory.entry_state(stdin=buffer)
+simgr = proj.factory.simulation_manager(state, save_unconstrained=True)
+
+# Explore
+simgr.run()
+
+# Find states with controlled instruction pointer
+for state in simgr.unconstrained:
+    if state.solver.symbolic(state.regs.rip):
+        print("Found controllable IP!")
+        
+        # Try to redirect to specific address
+        target_addr = 0x400700
+        state.solver.add(state.regs.rip == target_addr)
+        
+        if state.solver.satisfiable():
+            exploit = state.solver.eval(buffer, cast_to=bytes)
+            print(f"Exploit payload: {exploit[:100]}...")
+            
+            # Verify RIP control
+            rip = state.solver.eval(state.regs.rip)
+            print(f"RIP redirected to: {rip:#x}")
+```
+
+## Performance Tips
+
+<Note>
+**Simplify Early**: Call `state.solver.simplify()` periodically to simplify constraint expressions
+</Note>
+
+<Note>
+**Minimize Symbolic Data**: Only make inputs symbolic that need to be. Use concrete values when possible.
+</Note>
+
+<Note>
+**Add Constraints Early**: Add known constraints as early as possible to prune the solution space
+</Note>
+
+<Warning>
+Solver calls can be expensive. Use `LAZY_SOLVES` option to defer satisfiability checks when possible.
+</Warning>
+
+## See Also
+
+- [Symbolic Execution](/core-concepts/symbolic-execution)
+- [SimState](/core-concepts/states)
+- [Claripy Operations Reference](/appendix/claripy-operations)
+- [Z3 Documentation](https://github.com/Z3Prover/z3)

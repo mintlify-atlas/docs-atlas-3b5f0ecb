@@ -1,0 +1,504 @@
+---
+title: Data-Flow Analysis
+description: Track data dependencies with DDG and VFG in angr
+---
+
+angr provides two complementary data-flow analyses: **DDG (Data Dependence Graph)** for fast dependency tracking and **VFG (Value-Flow Graph)** for precise abstract interpretation.
+
+## Overview
+
+Data-flow analysis tracks how data moves through a program:
+- **DDG**: Fast, CFG-based data dependence tracking
+- **VFG**: Precise value-flow analysis with abstract interpretation
+
+## DDG: Data Dependence Graph
+
+The `DDG` analysis builds a graph showing data dependencies between program statements.
+
+### Basic Usage
+
+```python
+import angr
+
+# Load binary and generate CFG
+p = angr.Project('/bin/example', load_options={'auto_load_libs': False})
+
+# DDG requires CFGEmulated with specific options
+cfg = p.analyses.CFGEmulated(
+    keep_state=True,
+    state_add_options={angr.options.TRACK_MEMORY_ACTIONS}
+)
+
+# Generate DDG
+ddg = p.analyses.DDG(cfg)
+
+# Access the graphs
+print(f"Statement graph: {ddg.graph}")
+print(f"Data graph: {ddg.data_graph}")
+print(f"Simplified: {ddg.simplified_data_graph}")
+```
+
+<Warning>
+**Important**: DDG requires a CFGEmulated with:
+- `keep_state=True` to preserve states
+- `state_add_options={angr.options.TRACK_MEMORY_ACTIONS}` to track memory/register accesses
+
+DDG is **fast but not sound** - use VFG for more accurate analysis.
+</Warning>
+
+### DDG Configuration
+
+```python
+ddg = p.analyses.DDG(
+    cfg,
+    
+    # Start address for analysis
+    start=0x400000,
+    
+    # Limit call depth (None = unlimited)
+    call_depth=5,
+    
+    # Only analyze specific blocks
+    block_addrs={0x400000, 0x400100},
+)
+```
+
+### Understanding DDG
+
+DDG tracks three types of dependencies:
+
+<Steps>
+  <Step title="Temporary Variables">
+    Dependencies within a single basic block:
+    
+    ```python
+    # Example: t0 = reg_eax; t1 = t0 + 1
+    # t1 depends on t0
+    ```
+  </Step>
+  
+  <Step title="Register Dependencies">
+    Cross-block register dependencies:
+    
+    ```python
+    # Block A: eax = 5
+    # Block B: ebx = eax
+    # ebx in B depends on eax in A
+    ```
+  </Step>
+  
+  <Step title="Memory Dependencies">
+    Stack and memory dependencies:
+    
+    ```python
+    # Block A: store [esp+4], eax
+    # Block B: ebx = load [esp+4]
+    # Load in B depends on store in A
+    ```
+  </Step>
+</Steps>
+
+### Accessing DDG Data
+
+<Tabs>
+  <Tab title="Statement Graph">
+    Graph of dependencies between statements:
+    
+    ```python
+    import networkx as nx
+    
+    # Iterate over dependencies
+    for src, dst, data in ddg.graph.edges(data=True):
+        print(f"{src} -> {dst}")
+        print(f"  Type: {data.get('type')}")
+        print(f"  Data: {data.get('data')}")
+    
+    # Find predecessors (what this depends on)
+    location = CodeLocation(0x400000, 5)
+    if location in ddg:
+        preds = ddg.get_predecessors(location)
+        print(f"Dependencies: {preds}")
+    ```
+  </Tab>
+  
+  <Tab title="Data Graph">
+    Graph of ProgramVariable dependencies:
+    
+    ```python
+    from angr.analyses.ddg import ProgramVariable
+    
+    # Iterate over program variables
+    for node in ddg.data_graph.nodes():
+        if isinstance(node, ProgramVariable):
+            print(f"Variable: {node.variable}")
+            print(f"Location: {node.location}")
+            
+            # Get dependencies
+            deps = ddg.data_graph.predecessors(node)
+            for dep in deps:
+                print(f"  Depends on: {dep}")
+    ```
+  </Tab>
+  
+  <Tab title="DDG View">
+    High-level view interface:
+    
+    ```python
+    # Access by instruction address
+    view = ddg.view
+    
+    # Get definitions at an instruction
+    defs = view[0x400010].definitions
+    for d in defs:
+        print(f"Definition: {d}")
+        print(f"Depends on: {d.depends_on}")
+        print(f"Dependents: {d.dependents}")
+    
+    # Access specific register
+    eax_def = view[0x400010]['eax']
+    if eax_def:
+        print(f"EAX dependencies: {eax_def.depends_on}")
+    ```
+  </Tab>
+</Tabs>
+
+### DDG Graph Types
+
+```python
+# Statement dependence graph
+# Nodes: CodeLocation objects
+# Edges: type (reg/mem/tmp), data
+for src, dst in ddg.graph.edges():
+    print(f"{src.block_addr:#x}:{src.stmt_idx} -> "
+          f"{dst.block_addr:#x}:{dst.stmt_idx}")
+
+# Data dependence graph  
+# Nodes: ProgramVariable objects
+# Edges: type (mem_addr/mem_data/kill)
+for node in ddg.data_graph.nodes():
+    print(f"Var: {node.variable} @ {node.location}")
+
+# Simplified data graph
+# Removes transitive edges and temporaries
+simple = ddg.simplified_data_graph
+print(f"Simplified: {len(simple.nodes())} nodes")
+```
+
+### Example: Backward Slicing with DDG
+
+```python
+from angr.code_location import CodeLocation
+from angr.sim_variable import SimRegisterVariable
+
+def get_dependencies(ddg, addr, stmt_idx, reg_name):
+    """Find all dependencies for a register at a location."""
+    
+    # Get register offset
+    reg_offset = ddg.project.arch.registers[reg_name][0]
+    reg_size = ddg.project.arch.registers[reg_name][1]
+    
+    # Create the variable and location
+    variable = SimRegisterVariable(reg_offset, reg_size)
+    location = CodeLocation(addr, stmt_idx)
+    
+    from angr.analyses.ddg import ProgramVariable
+    pv = ProgramVariable(variable, location, arch=ddg.project.arch)
+    
+    # Get subgraph of dependencies
+    subgraph = ddg.data_sub_graph(pv, simplified=True)
+    
+    print(f"Dependencies for {reg_name} at {addr:#x}:{stmt_idx}:")
+    for node in subgraph.nodes():
+        print(f"  {node}")
+    
+    return subgraph
+
+# Usage
+ddg = p.analyses.DDG(cfg)
+subgraph = get_dependencies(ddg, 0x400100, 10, 'eax')
+```
+
+## VFG: Value-Flow Graph
+
+The `VFG` analysis performs abstract interpretation to track value flow with higher precision.
+
+### Basic Usage
+
+```python
+# VFG can generate its own CFG or use existing
+vfg = p.analyses.VFG(
+    # Optional: provide CFGEmulated
+    cfg=None,
+    
+    # Function to analyze
+    function_start=0x400000,
+    
+    # Context sensitivity (0-infinity)
+    context_sensitivity_level=2,
+)
+
+# Access the graph
+print(f"VFG nodes: {len(vfg.graph.nodes())}")
+for node in vfg.graph.nodes():
+    print(f"VFGNode at {node.addr:#x}")
+```
+
+### VFG Configuration
+
+```python
+vfg = p.analyses.VFG(
+    # Existing CFG (or None to generate)
+    cfg=cfg,
+    
+    # Context sensitivity level
+    context_sensitivity_level=2,
+    
+    # Starting address
+    start=0x400000,
+    function_start=0x400000,
+    
+    # Interfunction analysis level
+    interfunction_level=1,
+    
+    # Custom initial state
+    initial_state=my_state,
+    
+    # Addresses to avoid
+    avoid_runs=[0x400500],
+    
+    # Widening/narrowing parameters
+    max_iterations=40,
+    max_iterations_before_widening=8,
+    widening_interval=3,
+)
+```
+
+### VFG Features
+
+<Steps>
+  <Step title="Abstract Interpretation">
+    VFG uses abstract interpretation with:
+    - State merging at merge points
+    - Widening for loop convergence
+    - Narrowing for precision
+  </Step>
+  
+  <Step title="Context Sensitivity">
+    Tracks calling contexts for precision:
+    - Level 0: Context-insensitive
+    - Level 1: One caller
+    - Level 2+: Multiple callers
+  </Step>
+  
+  <Step title="Interfunction Analysis">
+    Analyzes across function calls:
+    
+    ```python
+    # Level 0: No interprocedural
+    # Level 1: One level of calls
+    # Level N: N levels deep
+    vfg = p.analyses.VFG(
+        function_start=main_addr,
+        interfunction_level=2
+    )
+    ```
+  </Step>
+</Steps>
+
+### Accessing VFG Data
+
+```python
+import networkx as nx
+
+# Get node at address
+node = vfg.get_any_node(0x400000)
+if node:
+    print(f"Node: {node}")
+    print(f"State: {node.state}")
+    print(f"Final states: {node.final_states}")
+
+# Get all nodes at address (different contexts)
+for node in vfg.get_all_nodes(0x400000):
+    print(f"Context: {node.key}")
+
+# Access function initial/final states
+for func_addr, states in vfg.function_final_states.items():
+    print(f"Function {func_addr:#x} final states:")
+    for context, state in states.items():
+        print(f"  Context {context}: {state}")
+
+# Analyze the graph
+for node in vfg.graph.nodes():
+    preds = list(vfg.graph.predecessors(node))
+    succs = list(vfg.graph.successors(node))
+    print(f"{node.addr:#x}: {len(preds)} preds, {len(succs)} succs")
+```
+
+### VFGNode Properties
+
+```python
+node = vfg.get_any_node(0x400000)
+
+if node:
+    # Basic properties
+    print(f"Address: {node.addr:#x}")
+    print(f"Block ID: {node.key}")
+    
+    # States
+    print(f"Current state: {node.state}")
+    print(f"All states: {len(node.all_states)}")
+    print(f"Final states: {len(node.final_states)}")
+    
+    # Widening info
+    print(f"Widened: {node.widened_state is not None}")
+    print(f"Narrowing times: {node.narrowing_times}")
+    
+    # Analysis artifacts
+    print(f"Actions: {node.actions}")
+    print(f"Events: {node.events}")
+```
+
+### Example: Tracking Value Flow
+
+```python
+def track_register_flow(project, function_addr, reg_name):
+    """Track how a register's value flows through a function."""
+    
+    # Generate VFG
+    vfg = project.analyses.VFG(
+        function_start=function_addr,
+        context_sensitivity_level=1
+    )
+    
+    reg_offset = project.arch.registers[reg_name][0]
+    
+    print(f"Tracking {reg_name} in function {function_addr:#x}")
+    
+    # Examine each node
+    for node in sorted(vfg.graph.nodes(), key=lambda n: n.addr):
+        if node.state:
+            reg_val = node.state.registers.load(reg_offset)
+            
+            # Check if symbolic
+            if reg_val.symbolic:
+                print(f"  {node.addr:#x}: symbolic - {reg_val}")
+            else:
+                concrete = node.state.solver.eval(reg_val)
+                print(f"  {node.addr:#x}: concrete - {concrete:#x}")
+
+# Usage  
+track_register_flow(p, 0x400000, 'eax')
+```
+
+## Comparing DDG vs VFG
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>DDG</th>
+      <th>VFG</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Speed</td>
+      <td>⚡ Fast</td>
+      <td>🐌 Slow</td>
+    </tr>
+    <tr>
+      <td>Precision</td>
+      <td>Approximate</td>
+      <td>High (with widening)</td>
+    </tr>
+    <tr>
+      <td>Soundness</td>
+      <td>❌ Not guaranteed</td>
+      <td>✅ Sound (with caveats)</td>
+    </tr>
+    <tr>
+      <td>Requirements</td>
+      <td>CFGEmulated with states</td>
+      <td>Can generate own CFG</td>
+    </tr>
+    <tr>
+      <td>Use Case</td>
+      <td>Quick dependency analysis</td>
+      <td>Precise value tracking</td>
+    </tr>
+  </tbody>
+</table>
+
+<Tip>
+**Choose DDG when**: You need fast dependency tracking for backward slicing or quick analysis.
+
+**Choose VFG when**: You need precise value-flow information with abstract interpretation.
+</Tip>
+
+## Example: Combined Analysis
+
+```python
+import angr
+import networkx as nx
+
+def analyze_data_flow(binary_path, function_name):
+    """Complete data-flow analysis combining DDG and VFG."""
+    
+    # Setup
+    p = angr.Project(binary_path, load_options={'auto_load_libs': False})
+    cfg = p.analyses.CFGFast()
+    func = cfg.kb.functions[function_name]
+    
+    print(f"=== Analyzing {function_name} ===")
+    
+    # Fast DDG for dependencies
+    print("\n[1] Generating DDG for quick dependency view...")
+    cfg_e = p.analyses.CFGEmulated(
+        starts=[func.addr],
+        keep_state=True,
+        state_add_options={angr.options.TRACK_MEMORY_ACTIONS},
+        call_depth=1
+    )
+    ddg = p.analyses.DDG(cfg_e, start=func.addr)
+    
+    print(f"  Nodes: {len(ddg.data_graph.nodes())}")
+    print(f"  Edges: {len(ddg.data_graph.edges())}")
+    
+    # Show some dependencies
+    view = ddg.view
+    for node in list(cfg_e.graph.nodes())[:5]:
+        defs = view[node.addr].definitions
+        if defs:
+            print(f"  Definitions at {node.addr:#x}: {len(defs)}")
+    
+    # Precise VFG for value tracking
+    print("\n[2] Generating VFG for precise value flow...")
+    vfg = p.analyses.VFG(
+        function_start=func.addr,
+        context_sensitivity_level=1,
+        interfunction_level=0
+    )
+    
+    print(f"  VFG Nodes: {len(vfg.graph.nodes())}")
+    
+    # Analyze value flow
+    for node in list(vfg.graph.nodes())[:5]:
+        if node.state:
+            print(f"  State at {node.addr:#x}: tracked")
+    
+    return ddg, vfg
+
+# Usage
+ddg, vfg = analyze_data_flow('/bin/ls', 'main')
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Variable Recovery" href="/analyses/variable-recovery">
+    Identify variables using data flow
+  </Card>
+  <Card title="Backward Slice" href="/analyses/backward-slice">
+    Slice programs using DDG
+  </Card>
+</CardGroup>

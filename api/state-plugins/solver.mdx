@@ -1,0 +1,683 @@
+---
+title: Solver Plugin
+description: API reference for angr's constraint solver plugin
+---
+
+The solver plugin (`SimSolver`) is the primary interface for creating and manipulating symbolic variables and solving constraints in angr. It's accessible via `state.solver`.
+
+## Overview
+
+The solver plugin wraps the Claripy constraint solver and provides methods for:
+- Creating symbolic variables
+- Adding constraints
+- Evaluating expressions
+- Checking satisfiability
+- Finding min/max values
+
+## Creating Symbolic Variables
+
+### BVS
+
+```python
+BVS(name, size, min=None, max=None, stride=None, uninitialized=False, 
+    explicit_name=False, key=None, eternal=False, inspect=True, events=True, **kwargs)
+```
+
+Create a bit-vector symbol (symbolic variable).
+
+<ParamField path="name" type="str">
+  The name of the symbolic variable.
+</ParamField>
+
+<ParamField path="size" type="int">
+  The size in bits of the bitvector.
+</ParamField>
+
+<ParamField path="min" type="int" optional>
+  Minimum value (VSA only).
+</ParamField>
+
+<ParamField path="max" type="int" optional>
+  Maximum value (VSA only).
+</ParamField>
+
+<ParamField path="stride" type="int" optional>
+  Stride/step value (VSA only).
+</ParamField>
+
+<ParamField path="uninitialized" type="bool" default="false">
+  Whether to mark this as an uninitialized value for analysis.
+</ParamField>
+
+<ParamField path="explicit_name" type="bool" default="false">
+  If True, don't append a unique identifier to the name.
+</ParamField>
+
+<ParamField path="key" type="tuple" optional>
+  Tracking key for variable registration (e.g., `('mem', 0x1000)`).
+</ParamField>
+
+<ParamField path="eternal" type="bool" default="false">
+  If True with a key, all states with the same ancestry retrieve the same symbol.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  A symbolic bitvector.
+</ResponseField>
+
+```python
+# Create 32-bit symbolic variable
+x = state.solver.BVS('x', 32)
+
+# Create with explicit name (no unique suffix)
+y = state.solver.BVS('input', 64, explicit_name=True)
+
+# Create tracked variable
+buf = state.solver.BVS('buf', 256, key=('mem', 0x1000), eternal=True)
+
+# VSA: Create with value constraints
+port = state.solver.BVS('port', 16, min=1024, max=65535)
+```
+
+### Unconstrained
+
+```python
+Unconstrained(name, bits, uninitialized=True, inspect=True, events=True, 
+              key=None, eternal=False, **kwargs)
+```
+
+Create an unconstrained symbol or concrete zero based on state options.
+
+<ParamField path="name" type="str">
+  The name of the symbol.
+</ParamField>
+
+<ParamField path="bits" type="int">
+  The size in bits.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  A symbolic bitvector if `SYMBOLIC_INITIAL_VALUES` is set, otherwise concrete 0.
+</ResponseField>
+
+```python
+# Creates symbolic if SYMBOLIC_INITIAL_VALUES is in state.options
+val = state.solver.Unconstrained('uninit_var', 32)
+```
+
+## Adding Constraints
+
+### add
+
+```python
+add(*constraints)
+```
+
+Add constraints to the solver state.
+
+<ParamField path="constraints" type="BV">
+  Boolean constraint expressions to add. Pass multiple constraints as separate arguments.
+</ParamField>
+
+```python
+# Add single constraint
+state.solver.add(x > 10)
+
+# Add multiple constraints
+state.solver.add(x > 10, x < 100, y == 42)
+
+# Add complex constraint
+state.solver.add(x + y == z * 2)
+```
+
+<Accordion title="Important Notes">
+  - Constraints must be boolean expressions (comparisons, logical operations)
+  - Adding conflicting constraints makes the state unsatisfiable
+  - Constraints are permanent and affect all future solver operations
+  - Use `state.solver.satisfiable()` to check if constraints are consistent
+</Accordion>
+
+## Evaluating Expressions
+
+### eval
+
+```python
+eval(e, cast_to=None, **kwargs)
+```
+
+Get one possible solution for an expression.
+
+<ParamField path="e" type="BV">
+  The expression to evaluate.
+</ParamField>
+
+<ParamField path="cast_to" type="type" optional>
+  Type to cast result to (`int`, `bytes`, etc.).
+</ParamField>
+
+<ParamField path="extra_constraints" type="tuple" optional>
+  Additional temporary constraints for this evaluation only.
+</ParamField>
+
+<ResponseField name="return" type="int | bytes">
+  One possible value satisfying the constraints.
+</ResponseField>
+
+```python
+# Evaluate to integer
+value = state.solver.eval(x)
+print(value)  # e.g., 42
+
+# Evaluate to bytes
+string = state.solver.eval(buf, cast_to=bytes)
+print(string)  # e.g., b'hello'
+
+# Evaluate with extra constraints
+value = state.solver.eval(x, extra_constraints=(x > 100,))
+```
+
+### eval_one
+
+```python
+eval_one(e, cast_to=None, **kwargs)
+```
+
+Get the **only** possible solution. Raises an error if there are zero or multiple solutions.
+
+<ResponseField name="return" type="int | bytes">
+  The unique solution.
+</ResponseField>
+
+```python
+state.solver.add(x == 42)
+value = state.solver.eval_one(x)  # Returns 42
+
+# With default on failure
+value = state.solver.eval_one(x, default=0)  # Returns 0 if multiple solutions
+```
+
+### eval_upto
+
+```python
+eval_upto(e, n, cast_to=None, **kwargs)
+```
+
+Get up to `n` possible solutions.
+
+<ParamField path="n" type="int">
+  Maximum number of solutions to return.
+</ParamField>
+
+<ResponseField name="return" type="list">
+  List of solutions (length 1 to n).
+</ResponseField>
+
+```python
+# Get up to 10 solutions
+values = state.solver.eval_upto(x, 10)
+print(values)  # e.g., [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# Check if variable has limited solutions
+if len(state.solver.eval_upto(x, 2)) == 1:
+    print("x is concrete")
+```
+
+### eval_exact
+
+```python
+eval_exact(e, n, cast_to=None, **kwargs)
+```
+
+Get exactly `n` solutions. Raises error if there are more or fewer.
+
+```python
+state.solver.add(x < 5, x >= 0)
+values = state.solver.eval_exact(x, 5)  # [0, 1, 2, 3, 4]
+```
+
+### eval_atleast / eval_atmost
+
+```python
+eval_atleast(e, n, cast_to=None, **kwargs)
+eval_atmost(e, n, cast_to=None, **kwargs)
+```
+
+Get at least/at most `n` solutions. Raises error if requirement not met.
+
+```python
+# Ensure at least 5 solutions exist
+values = state.solver.eval_atleast(x, 5)
+
+# Ensure at most 3 solutions exist
+values = state.solver.eval_atmost(x, 3)
+```
+
+## Min/Max Values
+
+### min / max
+
+```python
+min(e, extra_constraints=(), exact=None, signed=False)
+max(e, extra_constraints=(), exact=None, signed=False)
+```
+
+Find the minimum or maximum possible value of an expression.
+
+<ParamField path="e" type="BV">
+  The expression to evaluate.
+</ParamField>
+
+<ParamField path="signed" type="bool" default="false">
+  Whether to treat the expression as signed.
+</ParamField>
+
+<ResponseField name="return" type="int">
+  The minimum or maximum value.
+</ResponseField>
+
+```python
+state.solver.add(x > 10, x < 100)
+min_val = state.solver.min(x)  # 11
+max_val = state.solver.max(x)  # 99
+
+# Signed min/max
+state.solver.add(y < 0)
+min_val = state.solver.min(y, signed=True)  # Negative value
+```
+
+## Satisfiability Checking
+
+### satisfiable
+
+```python
+satisfiable(extra_constraints=(), exact=None)
+```
+
+Check if the current constraints are satisfiable.
+
+<ParamField path="extra_constraints" type="tuple" optional>
+  Additional temporary constraints to check.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  True if satisfiable, False if unsatisfiable.
+</ResponseField>
+
+```python
+# Check if constraints are consistent
+if state.solver.satisfiable():
+    print("State is feasible")
+
+# Check with extra constraints
+if state.solver.satisfiable(extra_constraints=(x == 42,)):
+    print("x can be 42")
+```
+
+### is_true / is_false
+
+```python
+is_true(e, extra_constraints=(), exact=None)
+is_false(e, extra_constraints=(), exact=None)
+```
+
+Check if an expression is definitely true or false.
+
+<ResponseField name="return" type="bool">
+  True if the expression is definitely true/false under current constraints.
+</ResponseField>
+
+```python
+state.solver.add(x > 10)
+
+if state.solver.is_true(x > 5):
+    print("x is definitely > 5")
+
+if state.solver.is_false(x < 5):
+    print("x is definitely >= 5")
+```
+
+### solution
+
+```python
+solution(e, v, extra_constraints=(), exact=None)
+```
+
+Check if `v` is a valid solution for expression `e`.
+
+<ParamField path="e" type="BV">
+  The expression.
+</ParamField>
+
+<ParamField path="v" type="BV | int">
+  The proposed solution.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  True if v is a valid solution.
+</ResponseField>
+
+```python
+state.solver.add(x > 10, x < 20)
+print(state.solver.solution(x, 15))  # True
+print(state.solver.solution(x, 5))   # False
+```
+
+## Constraint Management
+
+### constraints
+
+Property that returns the current constraint list.
+
+```python
+all_constraints = state.solver.constraints
+print(f"State has {len(all_constraints)} constraints")
+
+for constraint in all_constraints:
+    print(constraint)
+```
+
+### unsat_core
+
+```python
+unsat_core(extra_constraints=())
+```
+
+Get the unsatisfiable core (minimal set of conflicting constraints).
+
+<ResponseField name="return" type="tuple">
+  Tuple of constraints that form an unsatisfiable core.
+</ResponseField>
+
+```python
+# Requires CONSTRAINT_TRACKING_IN_SOLVER option
+state.options.add('CONSTRAINT_TRACKING_IN_SOLVER')
+
+state.solver.add(x > 10)
+state.solver.add(x < 5)  # Conflict!
+
+try:
+    state.solver.eval(x)
+except:
+    core = state.solver.unsat_core()
+    print(f"Conflicting constraints: {core}")
+```
+
+### reload_solver
+
+```python
+reload_solver(constraints=None)
+```
+
+Reload the solver, useful when changing solver options.
+
+```python
+# Change solver options
+state.options.add('REPLACEMENT_SOLVER')
+state.solver.reload_solver()
+```
+
+## Variable Management
+
+### register_variable
+
+```python
+register_variable(v, key, eternal=True)
+```
+
+Register a variable with the tracking system.
+
+<ParamField path="v" type="BV">
+  The variable to register.
+</ParamField>
+
+<ParamField path="key" type="tuple">
+  Tracking key tuple (e.g., `('mem', 0x1000)`).
+</ParamField>
+
+<ParamField path="eternal" type="bool" default="true">
+  If True, variable persists across state copies.
+</ParamField>
+
+```python
+buf = state.solver.BVS('buffer', 256)
+state.solver.register_variable(buf, ('mem', 0x1000), eternal=True)
+```
+
+### get_variables
+
+```python
+get_variables(*keys)
+```
+
+Iterate over tracked variables matching the given key prefix.
+
+<ParamField path="keys" type="any">
+  Variable-length key prefix to filter by.
+</ParamField>
+
+<ResponseField name="return" type="iterator">
+  Iterator of (key, variable) tuples.
+</ResponseField>
+
+```python
+# Get all memory variables
+for key, var in state.solver.get_variables('mem'):
+    print(f"Memory at {key}: {var}")
+
+# Get specific file variables  
+for key, var in state.solver.get_variables('file', 2):
+    print(f"File 2 variable: {key} = {var}")
+
+# Get all tracked variables
+for key, var in state.solver.get_variables():
+    print(f"{key}: {var}")
+```
+
+### describe_variables
+
+```python
+describe_variables(v)
+```
+
+Get the tracking keys for all registered variables in an AST.
+
+<ParamField path="v" type="BV">
+  An expression containing variables.
+</ParamField>
+
+<ResponseField name="return" type="iterator">
+  Iterator of tracking keys.
+</ResponseField>
+
+```python
+expr = x + y + z
+for key in state.solver.describe_variables(expr):
+    print(f"Expression contains variable: {key}")
+```
+
+## Utility Methods
+
+### symbolic
+
+```python
+symbolic(e)
+```
+
+Check if an expression is symbolic (contains variables).
+
+<ResponseField name="return" type="bool">
+  True if symbolic, False if concrete.
+</ResponseField>
+
+```python
+if state.solver.symbolic(x):
+    print("x is symbolic")
+else:
+    print("x is concrete")
+```
+
+### unique
+
+```python
+unique(e, **kwargs)
+```
+
+Check if expression has exactly one solution, and add that constraint.
+
+<ResponseField name="return" type="bool">
+  True if unique, False if multiple solutions exist.
+</ResponseField>
+
+```python
+if state.solver.unique(x):
+    print(f"x must be {state.solver.eval(x)}")
+```
+
+### single_valued
+
+```python
+single_valued(e)
+```
+
+Check if expression is concrete or has only one possible value (without querying solver).
+
+<ResponseField name="return" type="bool">
+  True if single-valued.
+</ResponseField>
+
+```python
+if state.solver.single_valued(x):
+    print("x has a single value")
+```
+
+### simplify
+
+```python
+simplify(e=None)
+```
+
+Simplify an expression or the current constraint set.
+
+<ParamField path="e" type="BV" optional>
+  Expression to simplify. If None, simplifies all constraints.
+</ParamField>
+
+<ResponseField name="return" type="BV">
+  Simplified expression.
+</ResponseField>
+
+```python
+# Simplify expression
+simple = state.solver.simplify(x + x + 0)
+# simple might be 2*x
+
+# Simplify all constraints
+state.solver.simplify()
+```
+
+### variables
+
+```python
+variables(e)
+```
+
+Get the set of variable names in an expression.
+
+<ResponseField name="return" type="set">
+  Set of variable name strings.
+</ResponseField>
+
+```python
+vars = state.solver.variables(x + y * 2)
+print(vars)  # {'x', 'y'}
+```
+
+## Claripy Interoperability
+
+The solver provides access to all Claripy module functions as properties:
+
+```python
+# These are equivalent:
+state.solver.BVV(0x1234, 32)
+claripy.BVV(0x1234, 32)
+
+# Boolean operations
+state.solver.And(cond1, cond2)
+state.solver.Or(cond1, cond2)
+state.solver.Not(cond)
+
+# Arithmetic
+state.solver.ULT(x, y)  # Unsigned less than
+state.solver.SLT(x, y)  # Signed less than
+
+# Bit operations
+state.solver.Extract(63, 32, x)  # Get bits 63-32
+state.solver.Concat(x, y)  # Concatenate
+```
+
+## Examples
+
+### Symbolic Input Processing
+
+```python
+import angr
+
+project = angr.Project('/bin/example')
+state = project.factory.entry_state()
+
+# Create symbolic input
+input_size = 64
+sym_input = state.solver.BVS('input', input_size * 8)
+state.memory.store(0x1000, sym_input)
+
+# Run and add constraints
+simgr = project.factory.simulation_manager(state)
+simgr.explore(find=0x401234)
+
+if simgr.found:
+    found = simgr.found[0]
+    # Get valid input
+    solution = found.solver.eval(sym_input, cast_to=bytes)
+    print(f"Valid input: {solution}")
+```
+
+### Password Cracking
+
+```python
+# Symbolic password
+password = state.solver.BVS('password', 32 * 8)  # 32 bytes
+state.memory.store(password_addr, password)
+
+# Run to password check
+simgr.explore(find=success_addr, avoid=failure_addr)
+
+if simgr.found:
+    found = simgr.found[0]
+    pwd = found.solver.eval(password, cast_to=bytes)
+    print(f"Password: {pwd.decode()}")
+```
+
+### Constraint-Based Analysis
+
+```python
+# Add application constraints
+state.solver.add(x >= 0)
+state.solver.add(x <= 1000)
+state.solver.add(y == x * 2 + 5)
+
+# Find values
+if state.solver.satisfiable():
+    x_val = state.solver.eval(x)
+    y_val = state.solver.eval(y)
+    print(f"x={x_val}, y={y_val}")
+    
+# Check properties
+if state.solver.is_true(y > x):
+    print("y is always greater than x")
+```
+
+## See Also
+
+- [Claripy Documentation](https://github.com/angr/claripy) - Underlying solver engine
+- [Memory Plugin](/api/state-plugins/memory) - Symbolic memory operations
+- [State Options](/core-concepts/solver#state-options) - Solver configuration options

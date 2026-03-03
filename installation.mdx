@@ -1,0 +1,380 @@
+---
+title: Installation
+description: Complete guide to installing angr and its dependencies
+---
+
+This guide covers everything you need to install angr, from basic pip installation to development setup.
+
+## Requirements
+
+Before installing angr, ensure you meet these requirements:
+
+<Card title="Python Version" icon="python">
+  **Python 3.10 or higher** is required. angr supports Python 3.10, 3.11, 3.12, and 3.13.
+</Card>
+
+Check your Python version:
+
+```bash
+python --version
+```
+
+<Warning>
+angr has fully transitioned to Python 3 and does not support Python 2. If you need Python 2 support, you must use an older version of angr.
+</Warning>
+
+## Installation methods
+
+### Using pip (recommended)
+
+The simplest way to install angr is using pip with a virtual environment:
+
+<Steps>
+  <Step title="Create a virtual environment">
+    Using `venv` (built into Python):
+    
+    ```bash
+    python -m venv angr-env
+    source angr-env/bin/activate  # On Windows: angr-env\Scripts\activate
+    ```
+    
+    Or using `virtualenvwrapper`:
+    
+    ```bash
+    mkvirtualenv --python=$(which python3) angr
+    ```
+  </Step>
+  
+  <Step title="Install angr">
+    ```bash
+    pip install angr
+    ```
+    
+    This installs angr with all core dependencies:
+    - **archinfo** - Architecture information and definitions
+    - **pyvex** - Python bindings for VEX IR
+    - **cle** - Binary loader
+    - **claripy** - Constraint solver interface
+    - **capstone** - Disassembly engine
+    - **pypcode** - P-code translation
+    - And many more (see Core dependencies below)
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    python -c "import angr; print(angr.__version__)"
+    ```
+  </Step>
+</Steps>
+
+### Optional dependencies
+
+angr supports several optional features that require additional packages:
+
+<AccordionGroup>
+  <Accordion title="Keystone - Assembly engine" icon="key">
+    For assembling machine code:
+    
+    ```bash
+    pip install angr[keystone]
+    ```
+    
+    Or install separately:
+    
+    ```bash
+    pip install keystone-engine
+    ```
+  </Accordion>
+  
+  <Accordion title="Unicorn - Concrete execution engine" icon="horse">
+    For faster concrete execution using Unicorn:
+    
+    ```bash
+    pip install angr[unicorn]
+    ```
+    
+    Or install separately:
+    
+    ```bash
+    pip install unicorn==2.1.4
+    ```
+  </Accordion>
+  
+  <Accordion title="AngrDB - Database support" icon="database">
+    For storing analysis results in a database:
+    
+    ```bash
+    pip install angr[angrdb]
+    ```
+    
+    This installs SQLAlchemy for database operations.
+  </Accordion>
+  
+  <Accordion title="LLM - Large Language Model integration" icon="brain">
+    For LLM-powered analysis features:
+    
+    ```bash
+    pip install angr[llm]
+    ```
+    
+    This installs pydantic-ai for LLM integration.
+  </Accordion>
+  
+  <Accordion title="Telemetry - OpenTelemetry support" icon="chart-line">
+    For performance monitoring and tracing:
+    
+    ```bash
+    pip install angr[telemetry]
+    ```
+  </Accordion>
+</AccordionGroup>
+
+#### Install all optional dependencies
+
+To install angr with all optional features:
+
+```bash
+pip install angr[angrdb,keystone,unicorn,llm,telemetry]
+```
+
+## Development installation
+
+If you want to contribute to angr or use the latest development version:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/angr/angr.git
+    cd angr
+    ```
+  </Step>
+  
+  <Step title="Install development dependencies">
+    angr uses `uv` for development. Install uv first:
+    
+    ```bash
+    pip install uv
+    ```
+    
+    Then install angr in development mode:
+    
+    ```bash
+    uv sync
+    ```
+    
+    This installs:
+    - All core dependencies
+    - Development tools (pytest, ruff, coverage, etc.)
+    - Documentation tools (sphinx, furo, etc.)
+    - All optional dependencies
+  </Step>
+  
+  <Step title="Install from source with pip">
+    Alternatively, use pip in editable mode:
+    
+    ```bash
+    pip install -e .
+    ```
+    
+    For development with all extras:
+    
+    ```bash
+    pip install -e ".[angrdb,keystone,unicorn,llm]"
+    ```
+  </Step>
+</Steps>
+
+<Note>
+angr includes Rust components that are compiled during installation. Ensure you have a Rust toolchain installed for development builds.
+</Note>
+
+## Core dependencies
+
+angr automatically installs these core dependencies:
+
+<AccordionGroup>
+  <Accordion title="Core analysis components" icon="gear">
+    - **archinfo** (9.2.205.dev0) - Architecture definitions
+    - **pyvex** (9.2.205.dev0) - VEX IR lifting
+    - **cle** (9.2.205.dev0) - Binary loading
+    - **claripy** (9.2.205.dev0) - Constraint solving
+  </Accordion>
+  
+  <Accordion title="Disassembly and lifting" icon="microchip">
+    - **capstone** (5.0.6) - Multi-architecture disassembler
+    - **pypcode** (>=3.2.1, &lt;4.0) - P-code translation
+  </Accordion>
+  
+  <Accordion title="Utilities" icon="wrench">
+    - **networkx** (>=2.0, !=2.8.1) - Graph algorithms
+    - **cffi** (>=1.14.0) - C Foreign Function Interface
+    - **cachetools** - Caching utilities
+    - **sortedcontainers** - Sorted data structures
+    - **rich** (>=13.1.0) - Rich terminal output
+    - **GitPython** - Git repository interaction
+    - **psutil** - System and process utilities
+    - **lmdb** - Lightning Memory-Mapped Database
+    - **msgspec** - Fast serialization
+  </Accordion>
+  
+  <Accordion title="Symbolic execution" icon="wand-magic-sparkles">
+    - **sympy** - Symbolic mathematics
+    - **pycparser** (~=3.0) - C code parsing
+  </Accordion>
+  
+  <Accordion title="Other" icon="box">
+    - **protobuf** (>=6.33.0) - Protocol buffers
+    - **cxxheaderparser** - C++ header parsing
+    - **pydemumble** - Symbol demangling
+    - **mulpyplexer** - Multiplexing utilities
+    - **typing-extensions** - Typing backports
+    - **colorama** (Windows only) - Cross-platform colored output
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Common issues
+
+<AccordionGroup>
+  <Accordion title="ImportError: No module named 'angr'" icon="circle-exclamation">
+    **Solution**: Ensure you activated your virtual environment and ran `pip install angr`.
+    
+    ```bash
+    source angr-env/bin/activate  # Activate your venv
+    pip install angr
+    ```
+  </Accordion>
+  
+  <Accordion title="Python version too old" icon="clock">
+    **Error**: `angr requires Python 3.10 or higher`
+    
+    **Solution**: Upgrade Python or use pyenv to install a newer version:
+    
+    ```bash
+    pyenv install 3.12
+    pyenv global 3.12
+    ```
+  </Accordion>
+  
+  <Accordion title="Compilation errors during installation" icon="hammer">
+    **Error**: Errors building wheels or compiling native extensions
+    
+    **Solution**: Install build dependencies:
+    
+    **Ubuntu/Debian**:
+    ```bash
+    sudo apt-get install python3-dev build-essential
+    ```
+    
+    **macOS**:
+    ```bash
+    xcode-select --install
+    ```
+    
+    **Windows**: Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  </Accordion>
+  
+  <Accordion title="Capstone installation fails" icon="warning">
+    **Solution**: Capstone is pinned to version 5.0.6. If installation fails, try:
+    
+    ```bash
+    pip install --upgrade pip setuptools wheel
+    pip install capstone==5.0.6
+    pip install angr
+    ```
+  </Accordion>
+  
+  <Accordion title="Memory errors during analysis" icon="memory">
+    **Issue**: Large binaries may consume significant memory
+    
+    **Solution**: Use `auto_load_libs=False` when loading binaries:
+    
+    ```python
+    project = angr.Project('binary', auto_load_libs=False)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Platform-specific notes
+
+<Tabs>
+  <Tab title="Linux">
+    Most Linux distributions work out of the box. Install development headers:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install python3-dev build-essential libffi-dev
+    
+    # Fedora/RHEL
+    sudo dnf install python3-devel gcc libffi-devel
+    ```
+  </Tab>
+  
+  <Tab title="macOS">
+    Install Xcode Command Line Tools:
+    
+    ```bash
+    xcode-select --install
+    ```
+    
+    If using Homebrew Python:
+    
+    ```bash
+    brew install python@3.12
+    ```
+  </Tab>
+  
+  <Tab title="Windows">
+    1. Install Python from [python.org](https://python.org)
+    2. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+    3. Use Command Prompt or PowerShell (not Git Bash) for installation
+    
+    Some features may have limited support on Windows.
+  </Tab>
+</Tabs>
+
+## Verifying your installation
+
+Run this script to verify all components are working:
+
+```python
+import angr
+import cle
+import pyvex
+import claripy
+import archinfo
+
+print(f"angr version: {angr.__version__}")
+print(f"Architecture support: {archinfo.arch_from_id('AMD64')}")
+
+# Test loading a binary
+project = angr.Project('/bin/ls', auto_load_libs=False)
+print(f"Successfully loaded: {project.filename}")
+print(f"Architecture: {project.arch.name}")
+print(f"Entry point: {hex(project.entry)}")
+
+print("\nInstallation successful!")
+```
+
+## Getting help
+
+If you encounter issues not covered here:
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/angr/angr/issues">
+    Report bugs or installation problems
+  </Card>
+  
+  <Card title="Documentation" icon="book" href="https://docs.angr.io">
+    Browse the official documentation
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="https://docs.angr.io/en/latest/api.html">
+    Explore the API documentation
+  </Card>
+  
+  <Card title="Awesome angr" icon="star" href="https://github.com/degrigis/awesome-angr">
+    Community resources and examples
+  </Card>
+</CardGroup>

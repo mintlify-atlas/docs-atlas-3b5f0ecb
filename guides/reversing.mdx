@@ -1,0 +1,681 @@
+---
+title: Reverse Engineering Workflows with angr
+description: Complete workflows for reverse engineering binaries, from initial analysis to understanding complex program behavior
+---
+
+angr provides a comprehensive suite of tools for reverse engineering binary programs. This guide walks through practical workflows for analyzing unknown binaries.
+
+## Overview
+
+Reverse engineering with angr involves:
+- Static analysis with CFG recovery
+- Dynamic analysis with symbolic execution
+- Decompilation to pseudo-code
+- Data flow and dependency analysis
+- Function and code pattern recognition
+- Automated understanding of program logic
+
+## Initial Binary Analysis Workflow
+
+<Steps>
+  <Step title="Load and inspect the binary">
+    ```python
+    import angr
+    
+    # Load the binary
+    project = angr.Project('./unknown_binary', auto_load_libs=False)
+    
+    # Get basic information
+    print("Architecture:", project.arch)
+    print("Entry point:", hex(project.entry))
+    print("Base address:", hex(project.loader.main_object.min_addr))
+    print("Binary type:", project.loader.main_object.os)
+    ```
+  </Step>
+  
+  <Step title="Build Control Flow Graph">
+    ```python
+    # Fast CFG for quick overview
+    cfg = project.analyses.CFGFast()
+    
+    print(f"Found {len(cfg.kb.functions)} functions")
+    print(f"Found {cfg.graph.number_of_nodes()} basic blocks")
+    
+    # List all functions
+    for addr, func in cfg.kb.functions.items():
+        print(f"{hex(addr)}: {func.name}")
+    ```
+  </Step>
+  
+  <Step title="Identify interesting functions">
+    ```python
+    # Find main function
+    main_func = cfg.kb.functions.function(name='main')
+    if main_func:
+        print(f"Main function at {hex(main_func.addr)}")
+    
+    # Find string references
+    for string_ref in cfg.kb.memory_data:
+        if string_ref.sort == 'string':
+            print(f"String at {hex(string_ref.address)}: {string_ref.content}")
+    ```
+  </Step>
+  
+  <Step title="Analyze function behavior">
+    ```python
+    # Get function details
+    func = cfg.kb.functions.get(main_func.addr)
+    
+    print(f"Function: {func.name}")
+    print(f"Size: {func.size} bytes")
+    print(f"Blocks: {len(list(func.blocks))}")
+    print(f"Callsites: {len(func.get_call_sites())}")
+    ```
+  </Step>
+</Steps>
+
+## CFG Analysis Techniques
+
+### Fast CFG vs Emulated CFG
+
+<CodeGroup>
+```python Fast CFG (Recommended)
+# Quick, static analysis
+# Good for most reverse engineering tasks
+cfg = project.analyses.CFGFast(
+    normalize=True,
+    data_references=True
+)
+
+# Pros: Fast, lightweight
+# Cons: May miss indirect jumps
+```
+
+```python Emulated CFG (Detailed)
+# Slower but more accurate
+# Uses symbolic execution
+cfg = project.analyses.CFGEmulated(
+    keep_state=True,
+    state_add_options=angr.sim_options.refs,
+    context_sensitivity_level=2
+)
+
+# Pros: Resolves indirect jumps, more complete
+# Cons: Very slow, high memory usage
+```
+</CodeGroup>
+
+### Visualizing Control Flow
+
+```python
+import angr
+import networkx as nx
+import matplotlib.pyplot as plt
+
+def visualize_function_cfg(project, function_addr):
+    """Generate visual CFG for a function"""
+    cfg = project.analyses.CFGFast()
+    func = cfg.kb.functions.get(function_addr)
+    
+    if not func:
+        print("Function not found")
+        return
+    
+    # Get function's control flow graph
+    func_graph = func.graph
+    
+    # Create layout
+    pos = nx.spring_layout(func_graph)
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(
+        func_graph,
+        pos,
+        node_color='lightblue',
+        node_size=500
+    )
+    
+    # Draw edges
+    nx.draw_networkx_edges(
+        func_graph,
+        pos,
+        arrows=True
+    )
+    
+    # Draw labels
+    labels = {node: hex(node.addr) for node in func_graph.nodes()}
+    nx.draw_networkx_labels(func_graph, pos, labels, font_size=8)
+    
+    plt.title(f"CFG for {func.name} at {hex(function_addr)}")
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(f'cfg_{hex(function_addr)}.png', dpi=300, bbox_inches='tight')
+    print(f"CFG saved to cfg_{hex(function_addr)}.png")
+
+# Usage
+project = angr.Project('./binary', auto_load_libs=False)
+visualize_function_cfg(project, 0x401000)
+```
+
+## Function Analysis
+
+### Identifying Function Purpose
+
+```python
+import angr
+
+class FunctionAnalyzer:
+    """Analyze and classify function behavior"""
+    
+    def __init__(self, project, cfg):
+        self.project = project
+        self.cfg = cfg
+    
+    def analyze_function(self, func_addr):
+        """Comprehensive function analysis"""
+        func = self.cfg.kb.functions.get(func_addr)
+        
+        if not func:
+            return None
+        
+        analysis = {
+            'name': func.name,
+            'address': hex(func_addr),
+            'size': func.size,
+            'blocks': len(list(func.blocks)),
+            'complexity': self._calculate_complexity(func),
+            'calls': self._get_called_functions(func),
+            'strings': self._get_string_references(func),
+            'type': self._classify_function(func)
+        }
+        
+        return analysis
+    
+    def _calculate_complexity(self, func):
+        """Calculate cyclomatic complexity"""
+        # McCabe's complexity: edges - nodes + 2
+        graph = func.graph
+        return graph.number_of_edges() - graph.number_of_nodes() + 2
+    
+    def _get_called_functions(self, func):
+        """Get list of functions called by this function"""
+        called = []
+        
+        for call_site in func.get_call_sites():
+            target = func.get_call_target(call_site)
+            if target:
+                target_func = self.cfg.kb.functions.get(target)
+                if target_func:
+                    called.append({
+                        'address': hex(target),
+                        'name': target_func.name
+                    })
+        
+        return called
+    
+    def _get_string_references(self, func):
+        """Find strings referenced by this function"""
+        strings = []
+        
+        for block in func.blocks:
+            # Get constants referenced in block
+            block_obj = self.project.factory.block(block.addr)
+            
+            for const in block_obj.vex.constants:
+                # Check if constant points to string data
+                try:
+                    data = self.project.loader.memory.load(
+                        const.value,
+                        32
+                    )
+                    # Try to decode as string
+                    string = data.split(b'\x00')[0].decode('ascii')
+                    if len(string) > 3:  # Minimum string length
+                        strings.append(string)
+                except:
+                    pass
+        
+        return strings
+    
+    def _classify_function(self, func):
+        """Classify function based on behavior patterns"""
+        calls = [c['name'] for c in self._get_called_functions(func)]
+        strings = self._get_string_references(func)
+        
+        # Pattern matching
+        if any('print' in c for c in calls):
+            return 'output'
+        elif any('read' in c or 'scan' in c for c in calls):
+            return 'input'
+        elif any('malloc' in c or 'free' in c for c in calls):
+            return 'memory_management'
+        elif any('crypt' in c or 'hash' in c for c in calls):
+            return 'crypto'
+        elif len(calls) > 10:
+            return 'complex_logic'
+        elif len(calls) == 0 and func.size < 50:
+            return 'utility'
+        else:
+            return 'unknown'
+
+# Usage
+project = angr.Project('./binary', auto_load_libs=False)
+cfg = project.analyses.CFGFast()
+
+analyzer = FunctionAnalyzer(project, cfg)
+
+for addr, func in cfg.kb.functions.items():
+    if not func.is_plt:  # Skip PLT stubs
+        analysis = analyzer.analyze_function(addr)
+        if analysis:
+            print(f"\nFunction: {analysis['name']}")
+            print(f"  Address: {analysis['address']}")
+            print(f"  Type: {analysis['type']}")
+            print(f"  Complexity: {analysis['complexity']}")
+            print(f"  Calls: {len(analysis['calls'])} functions")
+            if analysis['strings']:
+                print(f"  Strings: {analysis['strings'][:3]}...")  # First 3
+```
+
+## Decompilation
+
+Convert binary code to pseudo-C code:
+
+```python
+import angr
+
+def decompile_function(project, function_addr):
+    """Decompile function to pseudo-C"""
+    # Build CFG
+    cfg = project.analyses.CFGFast()
+    
+    # Get the function
+    func = cfg.kb.functions.get(function_addr)
+    
+    if not func:
+        print("Function not found")
+        return None
+    
+    # Run decompiler
+    try:
+        dec = project.analyses.Decompiler(func, cfg=cfg.model)
+        
+        # Get pseudo-C code
+        pseudo_c = dec.codegen.text
+        
+        print(f"Decompiled {func.name}:")
+        print("=" * 60)
+        print(pseudo_c)
+        print("=" * 60)
+        
+        return pseudo_c
+    
+    except Exception as e:
+        print(f"Decompilation failed: {e}")
+        return None
+
+# Usage
+project = angr.Project('./binary', auto_load_libs=False)
+decompile_function(project, 0x401000)
+```
+
+<Note>
+The decompiler produces pseudo-C that approximates the original code structure but may not be perfectly readable. It's excellent for understanding logic flow.
+</Note>
+
+## Data Flow Analysis
+
+### Using DDG (Data Dependency Graph)
+
+```python
+import angr
+from angr.analyses.ddg import DDG
+
+project = angr.Project('./binary', auto_load_libs=False)
+
+# Build CFG with state
+cfg = project.analyses.CFGEmulated(
+    keep_state=True,
+    state_add_options=angr.sim_options.refs
+)
+
+# Build DDG
+ddg = project.analyses.DDG(cfg=cfg)
+
+# Analyze data dependencies
+print("Data dependency graph:")
+print(f"Nodes: {ddg.graph.number_of_nodes()}")
+print(f"Edges: {ddg.graph.number_of_edges()}")
+
+# Find dependencies for a specific variable
+def trace_variable_flow(ddg, start_location):
+    """Trace how data flows from a starting point"""
+    # Get all paths in the DDG
+    for node in ddg.graph.nodes():
+        if node.location.ins_addr == start_location:
+            print(f"\nVariable at {hex(start_location)}:")
+            print(f"  Type: {node.variable}")
+            
+            # Find consumers (where this data goes)
+            successors = list(ddg.graph.successors(node))
+            if successors:
+                print("  Flows to:")
+                for succ in successors:
+                    print(f"    -> {hex(succ.location.ins_addr)}")
+            
+            # Find sources (where this data comes from)
+            predecessors = list(ddg.graph.predecessors(node))
+            if predecessors:
+                print("  Comes from:")
+                for pred in predecessors:
+                    print(f"    <- {hex(pred.location.ins_addr)}")
+
+trace_variable_flow(ddg, 0x401234)
+```
+
+## Finding Cryptographic Code
+
+```python
+import angr
+
+class CryptoFinder:
+    """Identify potential cryptographic operations"""
+    
+    CRYPTO_PATTERNS = {
+        'xor_loop': ['xor', 'loop'],
+        'rotation': ['rol', 'ror'],
+        'bit_manipulation': ['and', 'or', 'xor', 'shl', 'shr'],
+        'constants': [0x67452301, 0xEFCDAB89, 0x98BADCFE],  # MD5/SHA constants
+    }
+    
+    def __init__(self, project):
+        self.project = project
+        self.cfg = project.analyses.CFGFast()
+    
+    def find_crypto_functions(self):
+        """Find functions that likely contain crypto"""
+        crypto_funcs = []
+        
+        for addr, func in self.cfg.kb.functions.items():
+            if func.is_plt:
+                continue
+            
+            score = self._score_crypto_likelihood(func)
+            
+            if score > 5:  # Threshold
+                crypto_funcs.append({
+                    'address': hex(addr),
+                    'name': func.name,
+                    'score': score
+                })
+        
+        return sorted(crypto_funcs, key=lambda x: x['score'], reverse=True)
+    
+    def _score_crypto_likelihood(self, func):
+        """Score function based on crypto indicators"""
+        score = 0
+        
+        # Check for loops (crypto often has loops)
+        if self._has_loops(func):
+            score += 2
+        
+        # Check for XOR operations
+        xor_count = self._count_instruction(func, 'xor')
+        score += min(xor_count, 5)  # Cap at 5
+        
+        # Check for bit rotations
+        if self._has_rotations(func):
+            score += 3
+        
+        # Check for crypto constants
+        if self._has_crypto_constants(func):
+            score += 10
+        
+        return score
+    
+    def _has_loops(self, func):
+        """Check if function has loops"""
+        # A loop exists if there's a back edge in the CFG
+        graph = func.graph
+        
+        for edge in graph.edges():
+            if edge[1].addr <= edge[0].addr:
+                return True
+        
+        return False
+    
+    def _count_instruction(self, func, mnemonic):
+        """Count occurrences of an instruction"""
+        count = 0
+        
+        for block in func.blocks:
+            cs_block = self.project.factory.block(block.addr).capstone
+            
+            for insn in cs_block.insns:
+                if insn.mnemonic == mnemonic:
+                    count += 1
+        
+        return count
+    
+    def _has_rotations(self, func):
+        """Check for rotate instructions"""
+        for block in func.blocks:
+            cs_block = self.project.factory.block(block.addr).capstone
+            
+            for insn in cs_block.insns:
+                if insn.mnemonic in ['rol', 'ror']:
+                    return True
+        
+        return False
+    
+    def _has_crypto_constants(self, func):
+        """Check for known crypto constants"""
+        for block in func.blocks:
+            block_obj = self.project.factory.block(block.addr)
+            
+            for const in block_obj.vex.constants:
+                if const.value in self.CRYPTO_PATTERNS['constants']:
+                    return True
+        
+        return False
+
+# Usage
+project = angr.Project('./binary', auto_load_libs=False)
+finder = CryptoFinder(project)
+
+crypto_funcs = finder.find_crypto_functions()
+
+print("Potential cryptographic functions:")
+for func in crypto_funcs[:10]:  # Top 10
+    print(f"  {func['name']} at {func['address']} (score: {func['score']})")
+```
+
+## Symbolic Execution for Understanding Logic
+
+### Extracting Constraints from a Function
+
+```python
+import angr
+import claripy
+
+def extract_constraints(project, function_addr, target_addr):
+    """
+    Extract the constraints needed to reach a specific address
+    within a function
+    """
+    # Create symbolic state at function entry
+    state = project.factory.call_state(
+        function_addr,
+        claripy.BVS('arg1', 64),
+        claripy.BVS('arg2', 64),
+        claripy.BVS('arg3', 64)
+    )
+    
+    # Explore to target
+    simgr = project.factory.simulation_manager(state)
+    simgr.explore(find=target_addr)
+    
+    if simgr.found:
+        found_state = simgr.found[0]
+        
+        # Get constraints
+        print(f"Constraints to reach {hex(target_addr)}:")
+        for constraint in found_state.solver.constraints:
+            print(f"  {constraint}")
+        
+        # Try to get concrete values
+        print("\nExample satisfying values:")
+        arg1_val = found_state.solver.eval(state.regs.rdi)
+        arg2_val = found_state.solver.eval(state.regs.rsi)
+        print(f"  arg1 = {hex(arg1_val)}")
+        print(f"  arg2 = {hex(arg2_val)}")
+        
+        return found_state.solver.constraints
+    
+    return None
+
+# Usage
+project = angr.Project('./binary', auto_load_libs=False)
+constraints = extract_constraints(project, 0x401000, 0x401234)
+```
+
+## Complete Reverse Engineering Pipeline
+
+```python
+import angr
+import json
+
+class BinaryReverser:
+    """Complete reverse engineering pipeline"""
+    
+    def __init__(self, binary_path):
+        self.project = angr.Project(binary_path, auto_load_libs=False)
+        self.cfg = None
+        self.analysis_results = {}
+    
+    def full_analysis(self):
+        """Run complete analysis pipeline"""
+        print("[*] Starting full binary analysis...\n")
+        
+        self.basic_info()
+        self.build_cfg()
+        self.analyze_functions()
+        self.find_interesting_code()
+        self.generate_report()
+    
+    def basic_info(self):
+        """Extract basic binary information"""
+        print("[1] Basic Information")
+        
+        info = {
+            'arch': str(self.project.arch),
+            'entry': hex(self.project.entry),
+            'base': hex(self.project.loader.main_object.min_addr),
+            'os': self.project.loader.main_object.os,
+        }
+        
+        self.analysis_results['basic_info'] = info
+        
+        for key, value in info.items():
+            print(f"  {key}: {value}")
+        print()
+    
+    def build_cfg(self):
+        """Build control flow graph"""
+        print("[2] Building CFG...")
+        
+        self.cfg = self.project.analyses.CFGFast(
+            normalize=True,
+            data_references=True
+        )
+        
+        print(f"  Functions: {len(self.cfg.kb.functions)}")
+        print(f"  Basic blocks: {self.cfg.graph.number_of_nodes()}")
+        print()
+    
+    def analyze_functions(self):
+        """Analyze all functions"""
+        print("[3] Analyzing functions...")
+        
+        functions = []
+        
+        for addr, func in self.cfg.kb.functions.items():
+            if func.is_plt:
+                continue
+            
+            func_info = {
+                'address': hex(addr),
+                'name': func.name,
+                'size': func.size,
+                'blocks': len(list(func.blocks)),
+                'calls': len(list(func.get_call_sites()))
+            }
+            
+            functions.append(func_info)
+        
+        self.analysis_results['functions'] = functions
+        print(f"  Analyzed {len(functions)} functions")
+        print()
+    
+    def find_interesting_code(self):
+        """Find interesting code patterns"""
+        print("[4] Finding interesting code...")
+        
+        # Find crypto
+        crypto_finder = CryptoFinder(self.project)
+        crypto_funcs = crypto_finder.find_crypto_functions()
+        
+        self.analysis_results['crypto_functions'] = crypto_funcs[:5]
+        print(f"  Potential crypto functions: {len(crypto_funcs)}")
+        
+        # Find main function
+        main = self.cfg.kb.functions.function(name='main')
+        if main:
+            print(f"  Main function: {hex(main.addr)}")
+        print()
+    
+    def generate_report(self):
+        """Generate analysis report"""
+        print("[5] Generating report...")
+        
+        # Save to JSON
+        with open('analysis_report.json', 'w') as f:
+            json.dump(self.analysis_results, f, indent=2)
+        
+        print("  Report saved to analysis_report.json")
+        print("\n[*] Analysis complete!")
+
+# Usage
+reverser = BinaryReverser('./unknown_binary')
+reverser.full_analysis()
+```
+
+## Tips for Effective Reverse Engineering
+
+<Steps>
+  <Step title="Start with static analysis">
+    Use CFGFast to get quick overview before diving into symbolic execution.
+  </Step>
+  
+  <Step title="Identify entry points and interesting functions">
+    Focus on main(), input functions, and string references.
+  </Step>
+  
+  <Step title="Use decompiler for high-level understanding">
+    Pseudo-C code is easier to understand than raw assembly.
+  </Step>
+  
+  <Step title="Leverage symbolic execution selectively">
+    Only use on specific functions - too slow for whole binaries.
+  </Step>
+  
+  <Step title="Combine with traditional tools">
+    Use angr alongside IDA/Ghidra/Binary Ninja for best results.
+  </Step>
+</Steps>
+
+## Further Resources
+
+- [angr Examples Repository](https://github.com/angr/angr-examples)
+- [angr API Documentation](https://docs.angr.io/en/latest/api.html)
+- [Binary Analysis Course](https://github.com/RPISEC/MBE)

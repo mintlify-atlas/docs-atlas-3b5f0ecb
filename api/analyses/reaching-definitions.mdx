@@ -1,0 +1,399 @@
+---
+title: ReachingDefinitionsAnalysis
+description: API reference for angr's reaching definitions analysis
+---
+
+The `ReachingDefinitionsAnalysis` (RDA) is a text-book implementation of static data-flow analysis that works on functions or basic blocks. It supports both VEX and AIL (angr Intermediate Language).
+
+By registering observers at observation points, you can use RDA to generate:
+- Use-def chains
+- Def-use chains  
+- Reaching definitions
+- Liveness analysis
+- Other traditional data-flow analyses
+
+## Constructor
+
+```python
+ReachingDefinitionsAnalysis(
+    subject,
+    func_graph=None,
+    max_iterations=30,
+    track_tmps=False,
+    track_consts=True,
+    observation_points=None,
+    init_state=None,
+    cc=None,
+    function_handler=None,
+    dep_graph=True,
+    observe_all=False,
+    canonical_size=8,
+    track_liveness=True,
+    element_limit=5,
+    merge_into_tops=True,
+    **kwargs
+)
+```
+
+<ParamField path="subject" type="Subject | Function | Block" required>
+  The subject of analysis - a function or a single basic block. Can also be a `Subject` wrapper object.
+</ParamField>
+
+<ParamField path="func_graph" type="networkx.DiGraph | None">
+  Alternative graph to use instead of `function.graph`.
+</ParamField>
+
+<ParamField path="max_iterations" type="int" default="30">
+  Maximum number of iterations before the analysis is terminated.
+</ParamField>
+
+<ParamField path="track_tmps" type="bool" default="False">
+  Whether temporary variables should be tracked during analysis.
+</ParamField>
+
+<ParamField path="track_consts" type="bool" default="True">
+  Whether constant values should be tracked.
+</ParamField>
+
+<ParamField path="observation_points" type="Iterable[ObservationPoint] | None">
+  Collection of tuples defining where reaching definitions should be captured. Format: `("node"|"insn"|"stmt", address, OP_BEFORE|OP_AFTER)`.
+</ParamField>
+
+<ParamField path="init_state" type="ReachingDefinitionsState | None">
+  Optional initialization state. If provided, the analysis works on a copy.
+</ParamField>
+
+<ParamField path="cc" type="SimCC | None">
+  Calling convention of the function.
+</ParamField>
+
+<ParamField path="function_handler" type="FunctionHandler | None">
+  Function handler to update analysis state on function calls. If `None`, a default handler is created.
+</ParamField>
+
+<ParamField path="dep_graph" type="DepGraph | bool | None" default="True">
+  - `True`: Generate a dependency graph
+  - `False` or `None`: Skip dependency graph generation
+  - `DepGraph` instance: Use existing graph
+</ParamField>
+
+<ParamField path="observe_all" type="bool" default="False">
+  Observe every statement, both before and after execution.
+</ParamField>
+
+<ParamField path="canonical_size" type="int" default="8">
+  Size in bytes that objects with `UNKNOWN_SIZE` are treated as.
+</ParamField>
+
+<ParamField path="track_liveness" type="bool" default="True">
+  Whether to track liveness information. Can consume significant RAM on large functions.
+</ParamField>
+
+<ParamField path="element_limit" type="int" default="5">
+  Maximum number of elements in definition sets before merging to TOP.
+</ParamField>
+
+<ParamField path="merge_into_tops" type="bool" default="True">
+  Merge known values into TOP if TOP is present.
+  - `True`: `{TOP} ∨ {0xabc} = {TOP}`
+  - `False`: `{TOP} ∨ {0xabc} = {TOP, 0xabc}`
+</ParamField>
+
+### Advanced Parameters
+
+<ParamField path="interfunction_level" type="int" default="0">
+  Number of functions to recurse into for interprocedural analysis. Only used if `function_handler` is not provided.
+</ParamField>
+
+<ParamField path="use_callee_saved_regs_at_return" type="bool" default="True">
+  Whether to use callee-saved registers at function returns.
+</ParamField>
+
+## Properties
+
+<ResponseField name="observed_results" type="dict[ObservationPoint, LiveDefinitions]">
+  Dictionary mapping observation points to their corresponding `LiveDefinitions` at that point.
+</ResponseField>
+
+<ResponseField name="all_definitions" type="set">
+  Set of all definitions encountered during analysis.
+</ResponseField>
+
+<ResponseField name="all_uses" type="set">
+  Set of all uses encountered during analysis.
+</ResponseField>
+
+<ResponseField name="dep_graph" type="DepGraph">
+  The dependency graph if `dep_graph=True` was specified.
+</ResponseField>
+
+<ResponseField name="model" type="ReachingDefinitionsModel">
+  The model containing all analysis results and live definitions.
+</ResponseField>
+
+<ResponseField name="one_result" type="LiveDefinitions">
+  Convenience property to get a single result when only one observation point exists. Raises `ValueError` if zero or multiple results exist.
+</ResponseField>
+
+<ResponseField name="visited_blocks" type="set">
+  Set of all blocks visited during analysis.
+</ResponseField>
+
+## Methods
+
+### get_reaching_definitions_by_insn(ins_addr, op_type)
+
+Get reaching definitions at a specific instruction.
+
+<ParamField path="ins_addr" type="int" required>
+  The instruction address.
+</ParamField>
+
+<ParamField path="op_type" type="OP_BEFORE | OP_AFTER" required>
+  Whether to get definitions before or after the instruction.
+</ParamField>
+
+**Returns:** `LiveDefinitions` object.
+
+**Raises:** `KeyError` if the observation point was not registered.
+
+```python
+from angr.knowledge_plugins.key_definitions.constants import OP_BEFORE, OP_AFTER
+
+rda = project.analyses.ReachingDefinitions(
+    func,
+    observation_points=[('insn', 0x401234, OP_AFTER)]
+)
+
+live_defs = rda.get_reaching_definitions_by_insn(0x401234, OP_AFTER)
+```
+
+### get_reaching_definitions_by_node(node_addr, op_type)
+
+Get reaching definitions at a CFG node.
+
+<ParamField path="node_addr" type="int" required>
+  The node address.
+</ParamField>
+
+<ParamField path="op_type" type="OP_BEFORE | OP_AFTER" required>
+  Whether to get definitions before or after the node.
+</ParamField>
+
+**Returns:** `LiveDefinitions` object.
+
+```python
+live_defs = rda.get_reaching_definitions_by_node(0x401000, OP_BEFORE)
+```
+
+## Example Usage
+
+### Basic Analysis
+
+```python
+import angr
+
+project = angr.Project('/bin/true')
+cfg = project.analyses.CFGFast()
+
+# Analyze main function
+main_func = project.kb.functions['main']
+rda = project.analyses.ReachingDefinitions(subject=main_func)
+
+print(f"Visited {len(rda.visited_blocks)} blocks")
+print(f"Found {len(rda.all_definitions)} definitions")
+print(f"Found {len(rda.all_uses)} uses")
+```
+
+### Observation Points
+
+```python
+from angr.knowledge_plugins.key_definitions.constants import OP_BEFORE, OP_AFTER
+
+# Define observation points
+obs_points = [
+    ('node', 0x401000, OP_BEFORE),   # Before first block
+    ('insn', 0x401234, OP_AFTER),    # After specific instruction
+    ('node', 0x401500, OP_AFTER),    # After another block
+]
+
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    observation_points=obs_points
+)
+
+# Access observed definitions
+for obs_point, live_defs in rda.observed_results.items():
+    print(f"At {obs_point}:")
+    print(f"  Register definitions: {len(live_defs.register_definitions)}")
+    print(f"  Stack definitions: {len(live_defs.stack_definitions)}")
+```
+
+### Observe All Statements
+
+```python
+# Observe every statement
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    observe_all=True
+)
+
+# Iterate through all observation points
+for (obs_type, addr, op_type), live_defs in rda.observed_results.items():
+    print(f"{obs_type} at {hex(addr)} ({op_type})")
+```
+
+### Working with LiveDefinitions
+
+```python
+from angr.knowledge_plugins.key_definitions.constants import OP_AFTER
+
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    observation_points=[('node', main_func.addr, OP_AFTER)]
+)
+
+live_defs = rda.get_reaching_definitions_by_node(main_func.addr, OP_AFTER)
+
+# Access register definitions
+for reg_offset, definitions in live_defs.register_definitions.items():
+    print(f"Register {reg_offset}: {definitions}")
+
+# Access stack definitions  
+for stack_offset, definitions in live_defs.stack_definitions.items():
+    print(f"Stack offset {stack_offset}: {definitions}")
+```
+
+### Interprocedural Analysis
+
+```python
+# Analyze with call depth of 2
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    interfunction_level=2
+)
+
+# Access function call information
+for code_loc, call_info in rda.function_calls.items():
+    print(f"Call at {code_loc}: target={hex(call_info.target)}")
+```
+
+### Using Custom Function Handler
+
+```python
+from angr.analyses.reaching_definitions.function_handler import FunctionHandler
+
+class CustomHandler(FunctionHandler):
+    def handle_function(self, state, func):
+        # Custom logic for handling function calls
+        return state
+
+handler = CustomHandler()
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    function_handler=handler
+)
+```
+
+### Dependency Graph
+
+```python
+# Generate with dependency graph
+rda = project.analyses.ReachingDefinitions(
+    subject=main_func,
+    dep_graph=True
+)
+
+# Access the dependency graph
+dep_graph = rda.dep_graph
+
+# Query dependencies
+for node in dep_graph.graph.nodes():
+    deps = dep_graph.dependencies(node)
+    print(f"{node} depends on: {deps}")
+```
+
+### Single Block Analysis
+
+```python
+# Analyze a single block
+block = project.factory.block(0x401000)
+
+rda = project.analyses.ReachingDefinitions(
+    subject=block,
+    observation_points=[('node', block.addr, OP_AFTER)]
+)
+
+result = rda.one_result  # Convenient for single observation point
+```
+
+### AIL-based Analysis
+
+```python
+import angr.ailment as ailment
+
+# First convert to AIL
+clinic = project.analyses.Clinic(main_func)
+
+# Create AIL block subject
+for node in clinic.graph.nodes():
+    if isinstance(node, ailment.Block):
+        rda = project.analyses.ReachingDefinitions(
+            subject=node,
+            track_tmps=True
+        )
+        break
+```
+
+## Observation Point Types
+
+Observation points are tuples with the format: `(type, identifier, op_type)`
+
+<ParamField path="node" type="string">
+  Observe at the beginning or end of a CFG node.
+  - Identifier: node address (int) or (address, idx) for AIL
+  - Example: `('node', 0x401000, OP_BEFORE)`
+</ParamField>
+
+<ParamField path="insn" type="string">
+  Observe at a specific instruction.
+  - Identifier: instruction address (int)
+  - Example: `('insn', 0x401234, OP_AFTER)`
+</ParamField>
+
+<ParamField path="stmt" type="string">
+  Observe at a specific statement.
+  - Identifier: (block_addr, block_idx, stmt_idx)
+  - Example: `('stmt', (0x401000, None, 5), OP_BEFORE)`
+</ParamField>
+
+<ParamField path="exit" type="string">
+  Observe at a block exit.
+  - Identifier: (node_address, exit_stmt_idx)
+  - Example: `('exit', (0x401000, 10), OP_AFTER)`
+</ParamField>
+
+## Performance Considerations
+
+<Warning>
+  **Memory Usage**: Enabling `track_liveness=True` can consume significant memory (15GB+ for functions with 4000+ nodes). Disable it for large functions if liveness information is not needed.
+</Warning>
+
+### Optimization Tips
+
+1. **Limit observation points**: Only observe what you need
+2. **Disable liveness tracking** for large functions
+3. **Adjust `element_limit`**: Lower values merge to TOP sooner, reducing memory
+4. **Use `merge_into_tops=True`**: Reduces set sizes
+5. **Limit `max_iterations`**: Stop early if convergence is slow
+
+```python
+# Memory-optimized configuration
+rda = project.analyses.ReachingDefinitions(
+    subject=large_func,
+    track_liveness=False,
+    element_limit=3,
+    merge_into_tops=True,
+    max_iterations=20
+)
+```

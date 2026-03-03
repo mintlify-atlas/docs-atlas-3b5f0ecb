@@ -1,0 +1,475 @@
+---
+title: Variable Recovery
+description: Identify and recover program variables in angr
+---
+
+angr's variable recovery analyses identify stack variables, register variables, and global variables from binary code, enabling higher-level program understanding.
+
+## Overview
+
+Variable recovery analyzes binary code to:
+- Identify stack variables and their sizes
+- Track register usage patterns
+- Discover global variables
+- Determine variable types
+- Build variable access patterns
+
+angr provides two variable recovery analyses:
+- **VariableRecoveryFast**: Fast, CFG-based analysis
+- **VariableRecovery**: Slower but more precise with concrete state tracking
+
+## VariableRecoveryFast
+
+`VariableRecoveryFast` is the recommended analysis for most use cases. It uses forward analysis over the CFG to identify variables efficiently.
+
+### Basic Usage
+
+```python
+import angr
+
+# Load binary and generate CFG
+p = angr.Project('/bin/example', load_options={'auto_load_libs': False})
+cfg = p.analyses.CFGFast()
+
+# Get a function to analyze
+func = cfg.kb.functions['main']
+
+# Run variable recovery
+vr = p.analyses.VariableRecoveryFast(func)
+
+# Access recovered variables
+var_manager = p.kb.variables[func.addr]
+
+print(f"Found {len(var_manager.variables)} variables")
+for var in var_manager.variables:
+    print(f"  {var}")
+```
+
+### Configuration Options
+
+```python
+vr = p.analyses.VariableRecoveryFast(
+    func,
+    
+    # Use existing function graph
+    func_graph=func.graph,
+    
+    # Custom CFG model
+    cfg=cfg.model,
+    
+    # Track additional information
+    track_sp=True,
+    
+    # Clinic graph (from decompiler)
+    clinic=None,
+)
+```
+
+### Variable Types
+
+VariableRecoveryFast identifies several types of variables:
+
+<Tabs>
+  <Tab title="Stack Variables">
+    Variables stored on the stack:
+    
+    ```python
+    from angr.sim_variable import SimStackVariable
+    
+    for var in var_manager.variables:
+        if isinstance(var, SimStackVariable):
+            print(f"Stack variable:")
+            print(f"  Offset: {var.offset}")
+            print(f"  Size: {var.size} bytes")
+            print(f"  Base: {var.base}")  # 'bp' or 'sp'
+    ```
+  </Tab>
+  
+  <Tab title="Register Variables">
+    Variables in registers:
+    
+    ```python
+    from angr.sim_variable import SimRegisterVariable
+    
+    for var in var_manager.variables:
+        if isinstance(var, SimRegisterVariable):
+            reg_name = p.arch.register_names.get(var.reg)
+            print(f"Register variable:")
+            print(f"  Register: {reg_name}")
+            print(f"  Offset: {var.reg}")
+            print(f"  Size: {var.size} bytes")
+    ```
+  </Tab>
+  
+  <Tab title="Memory Variables">
+    Global/static variables:
+    
+    ```python
+    from angr.sim_variable import SimMemoryVariable
+    
+    for var in var_manager.variables:
+        if isinstance(var, SimMemoryVariable):
+            print(f"Memory variable:")
+            print(f"  Address: {var.addr:#x}")
+            print(f"  Size: {var.size} bytes")
+    ```
+  </Tab>
+</Tabs>
+
+## Variable Manager
+
+The `VariableManager` stores recovered variables in the knowledge base:
+
+```python
+from angr.knowledge_plugins.variables import VariableManager
+
+# Access for a specific function
+var_manager = p.kb.variables[func.addr]
+
+# Get all variables
+all_vars = var_manager.variables
+print(f"Total variables: {len(all_vars)}")
+
+# Get variables by type
+stack_vars = var_manager.get_variables(sort='stack')
+reg_vars = var_manager.get_variables(sort='register')
+global_vars = var_manager.get_variables(sort='global')
+
+print(f"Stack: {len(stack_vars)}")
+print(f"Register: {len(reg_vars)}")
+print(f"Global: {len(global_vars)}")
+```
+
+### Variable Access Information
+
+```python
+# Find variables at a specific code location
+from angr.code_location import CodeLocation
+
+loc = CodeLocation(0x400100, 5)  # block_addr, stmt_idx
+
+# Variables accessed at this location
+vars_at_loc = var_manager.find_variables_by_stmt(
+    0x400100,  # block address
+    5,         # statement index
+    'stack'    # variable type
+)
+
+for var in vars_at_loc:
+    print(f"Accessed: {var}")
+
+# Get variable definitions and uses
+for var in var_manager.variables:
+    # Where is this variable written?
+    writes = var_manager.get_variable_writes(var)
+    print(f"{var} written at: {writes}")
+    
+    # Where is this variable read?
+    reads = var_manager.get_variable_reads(var)
+    print(f"{var} read at: {reads}")
+```
+
+### Variable Naming
+
+```python
+# Variables have identifiers for naming
+for var in var_manager.variables:
+    print(f"Variable: {var}")
+    print(f"  Ident: {var.ident}")
+    print(f"  Region: {var.region}")
+    
+    # Get a name (like 's_10' for stack at offset -0x10)
+    if hasattr(var, 'name'):
+        print(f"  Name: {var.name}")
+```
+
+## VariableRecovery (with Concrete States)
+
+`VariableRecovery` is slower but tracks concrete execution states for more precise analysis:
+
+```python
+# Generate CFGEmulated with states
+cfg_e = p.analyses.CFGEmulated(
+    keep_state=True,
+    starts=[func.addr]
+)
+
+# Run variable recovery with concrete states
+vr = p.analyses.VariableRecovery(
+    func,
+    cfg=cfg_e
+)
+
+# Access variables the same way
+var_manager = p.kb.variables[func.addr]
+```
+
+<Note>
+`VariableRecovery` requires a `CFGEmulated` with `keep_state=True`. For most purposes, `VariableRecoveryFast` is sufficient and much faster.
+</Note>
+
+## Type Inference
+
+`VariableRecoveryFast` can infer variable types through constraint solving:
+
+```python
+vr = p.analyses.VariableRecoveryFast(func)
+
+# Access type variables if available
+if hasattr(vr, '_states'):
+    for addr, state in vr._states.items():
+        if hasattr(state, 'typevars'):
+            print(f"Type variables at {addr:#x}:")
+            for var, typevar in state.typevars.items():
+                print(f"  {var}: {typevar}")
+```
+
+### Using with Typehoon
+
+Combine with Typehoon for advanced type inference:
+
+```python
+# Run variable recovery
+vr = p.analyses.VariableRecoveryFast(func)
+
+# Run type analysis
+from angr.analyses.typehoon import Typehoon
+typer = p.analyses.Typehoon(func)
+
+# Access inferred types
+for var in p.kb.variables[func.addr].variables:
+    if var in typer.var_to_typevar:
+        typevar = typer.var_to_typevar[var]
+        print(f"{var}: {typevar}")
+```
+
+## Integration with Decompiler
+
+Variable recovery is a key component of decompilation:
+
+```python
+# Decompiler automatically runs variable recovery
+dec = p.analyses.Decompiler(func)
+
+# Access the variable manager used
+var_manager = dec.clinic.variable_kb.variables[func.addr]
+
+# Variables in decompiled code
+if dec.codegen:
+    # The codegen uses recovered variables for naming
+    print(dec.codegen.text)
+```
+
+## Example: Analyzing Stack Layout
+
+```python
+import angr
+from angr.sim_variable import SimStackVariable
+
+def analyze_stack_layout(project, func):
+    """Analyze the stack layout of a function."""
+    
+    # Run variable recovery
+    vr = project.analyses.VariableRecoveryFast(func)
+    var_manager = project.kb.variables[func.addr]
+    
+    # Get stack variables
+    stack_vars = [v for v in var_manager.variables 
+                  if isinstance(v, SimStackVariable)]
+    
+    # Sort by offset
+    stack_vars.sort(key=lambda v: v.offset)
+    
+    print(f"=== Stack Layout for {func.name} ===")
+    print(f"Found {len(stack_vars)} stack variables\n")
+    
+    # Display layout
+    for var in stack_vars:
+        offset_str = f"+{var.offset:#x}" if var.offset >= 0 else f"{var.offset:#x}"
+        size_str = f"{var.size} bytes"
+        
+        print(f"  [{var.base}{offset_str:>8}] {size_str:>10}  {var}")
+        
+        # Check for accesses
+        writes = var_manager.get_variable_writes(var)
+        reads = var_manager.get_variable_reads(var)
+        
+        if writes or reads:
+            print(f"    Writes: {len(writes)}, Reads: {len(reads)}")
+    
+    # Estimate stack frame size
+    if stack_vars:
+        min_offset = min(v.offset for v in stack_vars)
+        max_offset = max(v.offset + v.size for v in stack_vars)
+        frame_size = max_offset - min_offset
+        print(f"\nEstimated frame size: {frame_size} bytes")
+
+# Usage
+p = angr.Project('/bin/ls', load_options={'auto_load_libs': False})
+cfg = p.analyses.CFGFast()
+main = cfg.kb.functions['main']
+
+analyze_stack_layout(p, main)
+```
+
+## Example: Register Usage Analysis
+
+```python
+from angr.sim_variable import SimRegisterVariable
+from collections import defaultdict
+
+def analyze_register_usage(project, func):
+    """Analyze which registers are used as variables."""
+    
+    vr = project.analyses.VariableRecoveryFast(func)
+    var_manager = project.kb.variables[func.addr]
+    
+    # Group by register
+    reg_usage = defaultdict(list)
+    
+    for var in var_manager.variables:
+        if isinstance(var, SimRegisterVariable):
+            reg_name = project.arch.register_names.get(var.reg, f"r{var.reg}")
+            reg_usage[reg_name].append(var)
+    
+    print(f"=== Register Usage in {func.name} ===")
+    
+    for reg_name in sorted(reg_usage.keys()):
+        vars = reg_usage[reg_name]
+        print(f"\n{reg_name}: {len(vars)} variable(s)")
+        
+        for var in vars:
+            reads = var_manager.get_variable_reads(var)
+            writes = var_manager.get_variable_writes(var)
+            print(f"  {var}: {len(writes)} writes, {len(reads)} reads")
+
+# Usage
+analyze_register_usage(p, main)
+```
+
+## Example: Finding Uninitialized Variables
+
+```python
+def find_uninitialized_variables(project, func):
+    """Find variables that may be read before being written."""
+    
+    vr = project.analyses.VariableRecoveryFast(func)
+    var_manager = project.kb.variables[func.addr]
+    
+    print(f"=== Potentially Uninitialized Variables in {func.name} ===")
+    
+    for var in var_manager.variables:
+        reads = var_manager.get_variable_reads(var)
+        writes = var_manager.get_variable_writes(var)
+        
+        if not writes and reads:
+            print(f"\nVariable: {var}")
+            print(f"  Never written, but read at:")
+            for loc in reads:
+                print(f"    {loc}")
+        
+        elif reads and writes:
+            # Check if first access is a read
+            all_accesses = sorted(reads + writes, 
+                                key=lambda loc: (loc.block_addr, loc.stmt_idx))
+            
+            if all_accesses and all_accesses[0] in reads:
+                print(f"\nVariable: {var}")
+                print(f"  First access is a READ at {all_accesses[0]}")
+
+# Usage
+find_uninitialized_variables(p, main)
+```
+
+## Advanced Features
+
+### Custom Variable Annotations
+
+```python
+from angr.analyses.variable_recovery.annotations import (
+    StackLocationAnnotation
+)
+
+# Variables can have annotations for tracking
+# These are used internally during analysis
+```
+
+### Variable Regions
+
+```python
+# Variables are organized by memory regions
+for var in var_manager.variables:
+    print(f"{var}:")
+    print(f"  Region: {var.region}")  # Usually the function address
+    print(f"  Ident: {var.ident}")    # Unique identifier
+```
+
+### Phi Variables
+
+At merge points, phi variables represent multiple definitions:
+
+```python
+# Check for phi variables (created during merging)
+if hasattr(vr, '_states'):
+    for state in vr._states.values():
+        if hasattr(state, 'phi_variables'):
+            for orig, phi in state.phi_variables.items():
+                print(f"Phi: {orig} -> {phi}")
+```
+
+## Performance Considerations
+
+<Tip>
+**Performance Tips**:
+- Use `VariableRecoveryFast` instead of `VariableRecovery`
+- Run on normalized CFG for better results
+- Analyze individual functions rather than the entire binary
+- Cache results in the knowledge base
+</Tip>
+
+<Warning>
+**Limitations**:
+- May miss variables in obfuscated code
+- Indirect memory accesses are challenging
+- Accuracy depends on CFG quality
+- Type inference is best-effort
+</Warning>
+
+## Integration Examples
+
+### With Reaching Definitions
+
+```python
+# Variable recovery works well with reaching definitions
+vr = p.analyses.VariableRecoveryFast(func)
+rd = p.analyses.ReachingDefinitions(func)
+
+# Access definition information
+for var in p.kb.variables[func.addr].variables:
+    print(f"Variable: {var}")
+    # Use RD to track definition-use chains
+```
+
+### With Decompiler
+
+```python
+# Decompiler uses variable recovery internally
+dec = p.analyses.Decompiler(
+    func,
+    # Can provide custom variable KB
+    variable_kb=p.kb.variables
+)
+
+print(dec.codegen.text)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Decompiler" href="/analyses/decompiler">
+    See variables in decompiled code
+  </Card>
+  <Card title="Type Inference" href="/analyses/typehoon">
+    Infer variable types
+  </Card>
+</CardGroup>

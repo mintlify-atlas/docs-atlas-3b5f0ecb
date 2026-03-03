@@ -1,0 +1,422 @@
+---
+title: Project
+description: Main class of the angr binary analysis framework for loading and analyzing binaries
+---
+
+The `Project` class is the main entry point for the angr binary analysis framework. It contains a set of binaries and their relationships, and provides access to analyses, symbolic execution, and program manipulation capabilities.
+
+## Class Signature
+
+```python
+class Project:
+    def __init__(
+        self,
+        thing,
+        default_analysis_mode=None,
+        ignore_functions=None,
+        use_sim_procedures=True,
+        exclude_sim_procedures_func=None,
+        exclude_sim_procedures_list=(),
+        arch=None,
+        simos=None,
+        engine=None,
+        load_options: dict[str, Any] | None = None,
+        translation_cache=True,
+        selfmodifying_code: bool = False,
+        support_selfmodifying_code: bool | None = None,
+        store_function=None,
+        load_function=None,
+        analyses_preset=None,
+        concrete_target=None,
+        eager_ifunc_resolution=None,
+        cache_limits: dict[str, int | None] | None = None,
+        **kwargs,
+    )
+```
+
+## Parameters
+
+<ParamField path="thing" type="str | Path | CLE Loader | IOBase">
+  The path to the main executable object to analyze, or a CLE Loader object, or a file-like object.
+</ParamField>
+
+<ParamField path="default_analysis_mode" type="str" default="symbolic">
+  The mode of analysis to use by default. Defaults to 'symbolic'.
+</ParamField>
+
+<ParamField path="ignore_functions" type="list[str]">
+  A list of function names that, when imported from shared libraries, should never be stepped into in analysis (calls will return an unconstrained value).
+</ParamField>
+
+<ParamField path="use_sim_procedures" type="bool" default="True">
+  Whether to replace resolved dependencies for which simprocedures are available with said simprocedures.
+</ParamField>
+
+<ParamField path="exclude_sim_procedures_func" type="Callable">
+  A function that, when passed a function name, returns whether or not to wrap it with a simprocedure.
+</ParamField>
+
+<ParamField path="exclude_sim_procedures_list" type="list[str]" default="()">
+  A list of functions to *not* wrap with simprocedures.
+</ParamField>
+
+<ParamField path="arch" type="str | archinfo.Arch">
+  The target architecture (auto-detected otherwise).
+</ParamField>
+
+<ParamField path="simos" type="str | SimOS">
+  A SimOS class or name to use for this project.
+</ParamField>
+
+<ParamField path="engine" type="SimEngine">
+  The SimEngine class to use for this project.
+</ParamField>
+
+<ParamField path="translation_cache" type="bool" default="True">
+  If True, cache translated basic blocks rather than re-translating them.
+</ParamField>
+
+<ParamField path="selfmodifying_code" type="bool" default="False">
+  Whether to aggressively support self-modifying code. When enabled, emulation will try to read code from the current state instead of the original memory.
+</ParamField>
+
+<ParamField path="analyses_preset" type="PluginPreset">
+  The plugin preset for the analyses provider (i.e. Analyses instance).
+</ParamField>
+
+## Attributes
+
+<ResponseField name="arch" type="archinfo.Arch">
+  The architecture of the binary.
+</ResponseField>
+
+<ResponseField name="analyses" type="AnalysesHub">
+  The available analyses for this project.
+</ResponseField>
+
+<ResponseField name="entry" type="int">
+  The program entrypoint address.
+</ResponseField>
+
+<ResponseField name="factory" type="AngrObjectFactory">
+  Provides access to important analysis elements such as simulation managers, states, and blocks.
+</ResponseField>
+
+<ResponseField name="filename" type="str">
+  The filename of the executable.
+</ResponseField>
+
+<ResponseField name="loader" type="cle.Loader">
+  The CLE program loader containing all loaded objects.
+</ResponseField>
+
+<ResponseField name="kb" type="KnowledgeBase">
+  The project's knowledge base, containing recovered information about the program.
+</ResponseField>
+
+<ResponseField name="storage" type="defaultdict[list]">
+  Dictionary of things that should be loaded/stored with the Project.
+</ResponseField>
+
+<ResponseField name="llm_client" type="LLMClient">
+  The LLM client for this project (lazy-initialized from environment variables).
+</ResponseField>
+
+## Methods
+
+### Hooking Methods
+
+<Accordion title="hook()">
+  **Signature:**
+  ```python
+  def hook(self, addr, hook=None, length=0, kwargs=None, replace: bool | None = False)
+  ```
+
+  Hook a section of code with a custom function. This is used internally to provide symbolic summaries of library functions, and can be used to instrument execution or to modify control flow.
+
+  When hook is not specified, it returns a function decorator that allows easy hooking.
+
+  **Usage:**
+  ```python
+  @proj.hook(proj.entry)
+  def my_hook(state):
+      print("Welcome to execution!")
+  ```
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address to hook.
+  </ParamField>
+
+  <ParamField path="hook" type="SimProcedure | Callable">
+    A SimProcedure instance or a function to run at the given address.
+  </ParamField>
+
+  <ParamField path="length" type="int" default="0">
+    The number of bytes that will be skipped by executing the hook.
+  </ParamField>
+
+  <ParamField path="kwargs" type="dict">
+    Keyword arguments passed to the procedure's `run` method.
+  </ParamField>
+
+  <ParamField path="replace" type="bool | None" default="False">
+    Control behavior when address is already hooked. True: silently replace. False: warn and don't replace. None: warn and replace.
+  </ParamField>
+</Accordion>
+
+<Accordion title="is_hooked()">
+  **Signature:**
+  ```python
+  def is_hooked(self, addr) -> bool
+  ```
+
+  Returns True if `addr` is hooked.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    An address to check.
+  </ParamField>
+
+  **Returns:** `bool` - True if addr is hooked, False otherwise.
+</Accordion>
+
+<Accordion title="hooked_by()">
+  **Signature:**
+  ```python
+  def hooked_by(self, addr) -> SimProcedure | None
+  ```
+
+  Returns the current hook for `addr`.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    An address.
+  </ParamField>
+
+  **Returns:** `SimProcedure | None` - The hook at that address, or None if not hooked.
+</Accordion>
+
+<Accordion title="unhook()">
+  **Signature:**
+  ```python
+  def unhook(self, addr)
+  ```
+
+  Remove a hook.
+
+  **Parameters:**
+  <ParamField path="addr" type="int">
+    The address of the hook to remove.
+  </ParamField>
+</Accordion>
+
+<Accordion title="hook_symbol()">
+  **Signature:**
+  ```python
+  def hook_symbol(self, symbol_name, simproc, kwargs=None, replace: bool | None = None)
+  ```
+
+  Resolve a dependency in a binary by symbol name and hook that address.
+
+  **Parameters:**
+  <ParamField path="symbol_name" type="str | int">
+    The name of the symbol to hook, or an address.
+  </ParamField>
+
+  <ParamField path="simproc" type="SimProcedure">
+    The SimProcedure instance to hook with.
+  </ParamField>
+
+  <ParamField path="kwargs" type="dict">
+    Keyword arguments for the SimProcedure.
+  </ParamField>
+
+  <ParamField path="replace" type="bool | None">
+    Whether to replace existing hooks.
+  </ParamField>
+
+  **Returns:** `int` - The address of the hooked symbol.
+</Accordion>
+
+<Accordion title="is_symbol_hooked()">
+  **Signature:**
+  ```python
+  def is_symbol_hooked(self, symbol_name) -> bool
+  ```
+
+  Check if a symbol is already hooked.
+
+  **Parameters:**
+  <ParamField path="symbol_name" type="str">
+    Name of the symbol.
+  </ParamField>
+
+  **Returns:** `bool` - True if the symbol is hooked, False otherwise.
+</Accordion>
+
+<Accordion title="unhook_symbol()">
+  **Signature:**
+  ```python
+  def unhook_symbol(self, symbol_name) -> bool
+  ```
+
+  Remove the hook on a symbol.
+
+  **Parameters:**
+  <ParamField path="symbol_name" type="str">
+    Name of the symbol to unhook.
+  </ParamField>
+
+  **Returns:** `bool` - True if successful, False otherwise.
+</Accordion>
+
+### Execution Methods
+
+<Accordion title="execute()">
+  **Signature:**
+  ```python
+  def execute(self, *args, **kwargs)
+  ```
+
+  A symbolic execution helper in the simple style. Begins symbolic execution and returns when finished or terminated.
+
+  This function can be run in three ways:
+  - With no parameters: begins execution from the entrypoint
+  - With a "state" parameter: begins execution from that state
+  - With arbitrary kwargs: passed to `project.factory.full_init_state`
+
+  **Returns:** `SimulationManager` - The resulting simulation manager.
+</Accordion>
+
+<Accordion title="terminate_execution()">
+  **Signature:**
+  ```python
+  def terminate_execution(self)
+  ```
+
+  Terminates a symbolic execution that was started with `Project.execute()`.
+</Accordion>
+
+### Cache Limit Methods
+
+<Accordion title="get_function_cache_limit()">
+  **Signature:**
+  ```python
+  def get_function_cache_limit(self) -> int | None
+  ```
+
+  Get the cache limit for function-level caches.
+
+  **Returns:** `int | None` - The cache limit, or None for disabling the cache.
+</Accordion>
+
+<Accordion title="get_cfg_node_cache_limit()">
+  **Signature:**
+  ```python
+  def get_cfg_node_cache_limit(self) -> int | None
+  ```
+
+  Get the cache limit for CFG node caches.
+
+  **Returns:** `int | None` - The cache limit, or None to disable the cache.
+</Accordion>
+
+<Accordion title="get_cfg_edge_cache_limit()">
+  **Signature:**
+  ```python
+  def get_cfg_edge_cache_limit(self) -> int | None
+  ```
+
+  Get the cache limit for CFG edge caches.
+
+  **Returns:** `int | None` - The cache limit, or None to disable the cache.
+</Accordion>
+
+### Knowledge Base Methods
+
+<Accordion title="get_kb()">
+  **Signature:**
+  ```python
+  def get_kb(self, name: str) -> KnowledgeBase
+  ```
+
+  Get or create a named knowledge base.
+
+  **Parameters:**
+  <ParamField path="name" type="str">
+    The name of the knowledge base.
+  </ParamField>
+
+  **Returns:** `KnowledgeBase` - The requested knowledge base.
+</Accordion>
+
+## Helper Function
+
+<Accordion title="load_shellcode()">
+  **Signature:**
+  ```python
+  def load_shellcode(
+      shellcode: bytes | str,
+      arch,
+      start_offset=0,
+      load_address=0,
+      thumb=False,
+      **kwargs
+  ) -> Project
+  ```
+
+  Load a new project based on a snippet of assembly or bytecode.
+
+  **Parameters:**
+  <ParamField path="shellcode" type="bytes | str">
+    The data to load, as either a bytestring of instructions or a string of assembly text.
+  </ParamField>
+
+  <ParamField path="arch" type="str | archinfo.Arch">
+    The name of the arch to use, or an archinfo class.
+  </ParamField>
+
+  <ParamField path="start_offset" type="int" default="0">
+    The offset into the data to start analysis.
+  </ParamField>
+
+  <ParamField path="load_address" type="int" default="0">
+    The address to place the data in memory.
+  </ParamField>
+
+  <ParamField path="thumb" type="bool" default="False">
+    Whether this is ARM Thumb shellcode.
+  </ParamField>
+
+  **Returns:** `Project` - A new Project instance.
+</Accordion>
+
+## Example Usage
+
+```python
+import angr
+
+# Load a binary
+proj = angr.Project('/bin/ls')
+
+# Access basic properties
+print(f"Architecture: {proj.arch.name}")
+print(f"Entry point: {proj.entry:#x}")
+print(f"Filename: {proj.filename}")
+
+# Hook a function
+@proj.hook(0x400000)
+def my_hook(state):
+    print(f"Hit hook at {state.addr:#x}")
+    state.regs.rax = 42
+
+# Create a state and simulate execution
+state = proj.factory.entry_state()
+simgr = proj.factory.simulation_manager(state)
+simgr.run()
+
+# Perform analysis
+cfg = proj.analyses.CFGFast()
+print(f"Found {len(cfg.functions)} functions")
+```
